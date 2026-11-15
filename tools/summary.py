@@ -78,18 +78,29 @@ def summarize(day):
         print(f"  {fmt(a):>8} active / {fmt(dom_total[host]):>8} open   {host}")
 
     if yt:
-        vids = [e for e in yt.values() if e.get("kind") == "video"]
-        shorts = [e for e in yt.values() if e.get("kind") == "short"]
-        print(f"\nYouTube: {len(vids)} videos ({fmt(sum(e.get('watched_s', 0) for e in vids))}), "
-              f"{len(shorts)} shorts ({fmt(sum(e.get('watched_s', 0) for e in shorts))})")
-        chan = collections.Counter()
-        for e in yt.values():
-            chan[e.get("channel") or "?"] += e.get("watched_s", 0)
-        for c, s in chan.most_common(5):
-            print(f"  {fmt(s):>8}  {c}")
-        print("  longest watched:")
-        for e in sorted(yt.values(), key=lambda x: -x.get("watched_s", 0))[:5]:
-            print(f"    {fmt(e.get('watched_s', 0)):>7} / {fmt(e.get('length_s') or 0):>7}  {e.get('title')!r} ({e.get('source')})")
+        for kind, label in (("video", "YouTube videos"), ("short", "YouTube Shorts")):
+            rows = [e for e in yt.values() if e.get("kind") == kind]
+            if not rows:
+                print(f"\n{label}: none")
+                continue
+            watched = sum(e.get("watched_s", 0) for e in rows)
+            finished = sum(1 for e in rows if e.get("finished"))
+            line = f"\n{label}: {len(rows)} watched, {fmt(watched)} total, {finished} finished"
+            if kind == "short":
+                line += f", {sum(e.get('loops', 0) for e in rows)} loops"
+            print(line)
+            src = collections.Counter(e.get("source") or "?" for e in rows)
+            print("  found via: " + ", ".join(f"{k} {n}" for k, n in src.most_common()))
+            chan = collections.Counter()
+            for e in rows:
+                chan[e.get("channel") or "?"] += e.get("watched_s", 0)
+            print("  top channels:")
+            for c, sec in chan.most_common(5):
+                print(f"    {fmt(sec):>8}  {c}")
+            print("  longest watched:")
+            for e in sorted(rows, key=lambda x: -x.get("watched_s", 0))[:5]:
+                length = fmt(e.get("length_s") or 0)
+                print(f"    {fmt(e.get('watched_s', 0)):>7} / {length:>7}  {e.get('title')!r} [{e.get('channel') or '?'}] ({e.get('source')})")
 
     if discord:
         print("\nDiscord channels read:")

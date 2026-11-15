@@ -27,10 +27,25 @@
   const inAd = () => !!document.querySelector(SEL.adShowing);
   const rnd1 = (n) => Math.round(n * 10) / 10;
 
+  // Shorts keeps several <video> elements (preloaded neighbours), so pick by what is on screen / playing.
+  function videoScore(v) {
+    const r = v.getBoundingClientRect();
+    const visH = Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
+    const visW = Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0));
+    let score = visH * visW;
+    if (!v.paused && !v.ended) score += 1e9;             // a playing video beats a merely visible one
+    if (v.closest && v.closest('ytd-reel-video-renderer[is-active]')) score += 1e6;
+    return score;
+  }
   function getVideo() {
-    return document.querySelector('ytd-reel-video-renderer[is-active] video')
-      || document.querySelector('#movie_player video, .html5-video-player video')
-      || document.querySelector('video');
+    const vids = Array.from(document.querySelectorAll('video'));
+    if (vids.length <= 1) return vids[0] || null;
+    let best = null, bestScore = -1;
+    for (const v of vids) {
+      const s = videoScore(v);
+      if (s > bestScore) { best = v; bestScore = s; }
+    }
+    return best;
   }
 
   function parseLocation() {
@@ -74,8 +89,28 @@
   let prev = null; // summary of previous session, for autoplay / shorts-swipe inference
   let lastStateSent = 0;
 
+  // oEmbed gives title + channel by video id, independent of YouTube's (changing) page layout.
+  const oembedCache = new Map(); // id -> {title, author} | null (failed)
+  function fetchOembed(id) {
+    if (oembedCache.has(id)) return;
+    oembedCache.set(id, undefined); // in flight
+    const url = 'https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent('https://www.youtube.com/watch?v=' + id);
+    fetch(url, { credentials: 'omit' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('oembed ' + r.status))))
+      .then((j) => oembedCache.set(id, { title: clean(j.title), author: clean(j.author_name) }))
+      .catch(() => oembedCache.set(id, null));
+    if (oembedCache.size > 200) oembedCache.delete(oembedCache.keys().next().value);
+  }
+
   function readMeta() {
     if (!cur) return;
+    const oe = oembedCache.get(cur.id); // undefined = pending, null = failed
+    if (oe) {
+      cur.title = oe.title || cur.title;
+      cur.channel = oe.author || cur.channel;
+      return !!cur.title;
+    }
+    if (cur.kind === 'short' && oe === undefined && Date.now() - cur.created < 3000) return false; // wait for oEmbed
     let title = '', channel = '';
     if (cur.kind === 'short') {
       title = clean((qsa(SEL.shortsTitle) || {}).textContent);
@@ -90,7 +125,7 @@
     }
     if (!title) {
       const t = clean(document.title).replace(/^\(\d+\)\s*/, '').replace(/\s*-\s*YouTube( Music)?$/, '');
-      if (t && t !== 'YouTube' && cur.kind === 'video') title = t;
+      if (t && t !== 'YouTube') title = t;
     }
     if (title) cur.title = title;
     if (channel) cur.channel = channel;
@@ -133,6 +168,7 @@
       watchedMs: 0, speedMs: 0, maxPos: 0, lastPos: 0, pauses: 0, seeks: 0, loops: 0, ads: 0,
       finished: false, wasAd: false, seekFrom: null,
     };
+    fetchOembed(loc.id);
   }
 
   function snapshot(v) {
@@ -179,6 +215,18 @@
       ev.reason = reason;
       if (!cur.metaReady) releaseBuffer();
       CH.send({ k: 'event', ev, clears: 'yt' });
+    } else if (Date.now() - cur.created > 3000) {
+      // Diagnostic: a session lived >3s but never saw playback. Helps tune selectors for YouTube changes.
+      CH.send({ k: 'event', ev: {
+        ts: CH.isoLocal(), type: 'yt_unstarted', video_id: cur.id, kind: cur.kind, reason,
+        age_s: rnd1((Date.now() - cur.created) / 1000), ad: inAd(),
+        videos: Array.from(document.querySelectorAll('video')).slice(0, 6).map((x) => {
+          const r = x.getBoundingClientRect();
+          return { paused: x.paused, ended: x.ended, ready: x.readyState, t: rnd1(x.currentTime || 0),
+                   dur: isFinite(x.duration) ? rnd1(x.duration) : null, w: Math.round(r.width), h: Math.round(r.height),
+                   top: Math.round(r.top), in_active_reel: !!(x.closest && x.closest('ytd-reel-video-renderer[is-active]')) };
+        }),
+      } });
     }
     prev = { kind: cur.kind, finished: cur.finished || (cur.length && cur.maxPos >= cur.length * 0.95) };
     cur = null;
