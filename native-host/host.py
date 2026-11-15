@@ -5,6 +5,7 @@ Protocol (Chrome native messaging): each message is a 4-byte native-endian lengt
 followed by UTF-8 JSON. Requests:
     {"events": [ {...}, ... ]}   -> appends one JSON line per event
     {"cmd": "ping"}              -> returns status info
+    {"cmd": "yt_today"}          -> returns today's deduped yt_session records
 Responses: {"ok": true, ...} or {"ok": false, "error": "..."}.
 
 Never print to stdout: stdout is the protocol channel.
@@ -101,6 +102,32 @@ def handle_ping():
     return {"ok": True, "dir": LOG_DIR, "file": path, "events_today": count_lines(path)}
 
 
+YT_FIELDS = ("sid", "kind", "title", "channel", "watched_s", "length_s", "start", "finished", "loops", "partial")
+
+
+def handle_yt_today():
+    """Today's YouTube sessions, deduped by sid (a partial snapshot can precede the final record;
+    keep the final one, as tools/summary.py does)."""
+    sessions = {}
+    try:
+        with open(day_path(datetime.date.today().isoformat()), encoding="utf-8") as f:
+            for n, line in enumerate(f):
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(e, dict) or e.get("type") != "yt_session":
+                    continue
+                key = e.get("sid") or "line%d" % n
+                if key not in sessions or not e.get("partial"):
+                    sessions[key] = e
+    except OSError:
+        pass
+    rows = [{k: e.get(k) for k in YT_FIELDS} for e in sessions.values()]
+    rows.sort(key=lambda r: r.get("start") or "")
+    return {"ok": True, "sessions": rows}
+
+
 def classify_stop(parent_pid, wait=5.0):
     """Why did the connection close? Chrome launches the host as its child. If that parent process
     goes away shortly after our stdin closes, the browser exited (quit or crash); if it is still alive,
@@ -141,6 +168,8 @@ def loop():
         try:
             if isinstance(msg, dict) and msg.get("cmd") == "ping":
                 send_message(handle_ping())
+            elif isinstance(msg, dict) and msg.get("cmd") == "yt_today":
+                send_message(handle_yt_today())
             elif isinstance(msg, dict) and isinstance(msg.get("events"), list):
                 send_message(handle_events(msg["events"]))
             else:

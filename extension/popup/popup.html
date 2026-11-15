@@ -8,21 +8,31 @@
   @media (prefers-color-scheme: dark) { :root { --bg:#202124; --fg:#e8eaed; --muted:#9aa0a6; --ok:#81c995; --bad:#f28b82; --line:#3c4043; } }
   body { margin:0; padding:14px; width:300px; background:var(--bg); color:var(--fg); font:13px/1.45 -apple-system, system-ui, sans-serif; }
   h1 { font-size:14px; margin:0 0 10px; }
+  section { margin-bottom:14px; }
   .row { display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px solid var(--line); }
   .row span:first-child { color:var(--muted); }
-  .ok { color:var(--ok); } .bad { color:var(--bad); }
+  .row small { color:var(--muted); margin-left:6px; }
+  .toggle { margin-top:8px; width:100%; padding:5px; font:inherit; color:var(--fg); background:none; border:1px solid var(--line); border-radius:4px; cursor:pointer; }
+  .toggle:disabled { opacity:.5; cursor:default; }
+  .list { margin-top:8px; max-height:200px; overflow-y:auto; }
+  .item { padding:4px 0; border-bottom:1px solid var(--line); }
+  .item .t { word-break:break-word; }
+  .item .m { color:var(--muted); font-size:11px; }
   #err { color:var(--bad); margin-top:8px; word-break:break-word; }
-  code { font-size:11px; word-break:break-all; }
 </style>
 </head>
 <body>
-  <h1>Chrome History Logger</h1>
-  <div class="row"><span>Native host</span><span id="host">…</span></div>
-  <div class="row"><span>Events today</span><span id="today">–</span></div>
-  <div class="row"><span>Queued</span><span id="queue">–</span></div>
-  <div class="row"><span>Tabs tracked</span><span id="tabs">–</span></div>
-  <div class="row"><span>Incognito</span><span id="incog">–</span></div>
-  <div style="margin-top:8px"><code id="file"></code></div>
+  <h1>YouTube today</h1>
+  <section id="video">
+    <div class="row"><span>Long videos</span><span><b class="time">–</b><small class="n"></small></span></div>
+    <button class="toggle" disabled>Show all</button>
+    <div class="list" hidden></div>
+  </section>
+  <section id="short">
+    <div class="row"><span>Shorts</span><span><b class="time">–</b><small class="n"></small></span></div>
+    <button class="toggle" disabled>Show all</button>
+    <div class="list" hidden></div>
+  </section>
   <div id="err"></div>
   <script src="popup.js"></script>
 </body>

@@ -140,15 +140,17 @@ function markHostOk() {
   updateBadge();
 }
 
-function ping() {
+function hostRequest(cmd) {
   return new Promise((resolve) => {
     if (!port) connect();
     if (!port) { resolve({ ok: false, error: hostStatus.error || 'not connected' }); return; }
     pending.push({ kind: 'ping', resolve });
-    try { port.postMessage({ cmd: 'ping' }); } catch (e) { pending.pop(); resolve({ ok: false, error: String(e) }); return; }
+    try { port.postMessage({ cmd }); } catch (e) { pending.pop(); resolve({ ok: false, error: String(e) }); return; }
     setTimeout(() => resolve({ ok: false, error: 'host did not answer' }), 3000);
   });
 }
+
+const ping = () => hostRequest('ping');
 
 async function flush() {
   await ready;
@@ -409,6 +411,8 @@ async function handleMessage(msg, sender) {
       incognitoAllowed = await isIncognitoAllowed();
       return { queue: queue.length, tracked_tabs: Object.keys(tabs).length, host, lastFlush: hostStatus.lastFlush, incognito_allowed: incognitoAllowed };
     }
+    case 'yt_today':
+      return await hostRequest('yt_today');
     case 'flush':
       await flush();
       break;
