@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>History Logger</title>
+<style>
+  :root { --bg:#fff; --fg:#1f1f1f; --muted:#666; --ok:#188038; --bad:#d93025; --line:#e0e0e0; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#202124; --fg:#e8eaed; --muted:#9aa0a6; --ok:#81c995; --bad:#f28b82; --line:#3c4043; } }
+  body { margin:0; padding:14px; width:300px; background:var(--bg); color:var(--fg); font:13px/1.45 -apple-system, system-ui, sans-serif; }
+  h1 { font-size:14px; margin:0 0 10px; }
+  .row { display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px solid var(--line); }
+  .row span:first-child { color:var(--muted); }
+  .ok { color:var(--ok); } .bad { color:var(--bad); }
+  button { margin-top:12px; width:100%; padding:7px; font:inherit; cursor:pointer; }
+  #err { color:var(--bad); margin-top:8px; word-break:break-word; }
+  code { font-size:11px; word-break:break-all; }
+</style>
+</head>
+<body>
+  <h1>Chrome History Logger</h1>
+  <div class="row"><span>Native host</span><span id="host">…</span></div>
+  <div class="row"><span>Events today</span><span id="today">–</span></div>
+  <div class="row"><span>Queued</span><span id="queue">–</span></div>
+  <div class="row"><span>Tabs tracked</span><span id="tabs">–</span></div>
+  <div class="row"><span>Logging</span><span id="state">–</span></div>
+  <div style="margin-top:8px"><code id="file"></code></div>
+  <div id="err"></div>
+  <button id="toggle">Pause logging</button>
+  <script src="popup.js"></script>
+</body>
+</html>

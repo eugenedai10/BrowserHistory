@@ -1,0 +1,61 @@
+{
+  "manifest_version": 3,
+  "name": "Chrome History Logger",
+  "version": "1.0.0",
+  "description": "Logs browsing activity (visits, clicks, YouTube, Discord) to ~/chrome-history via a native host.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt5g0npAGK5Sbj3jvwVCaI+taInqkhGSslABH46v/3jzcF9RzbgG4KUoUGrOHTdvYCxeEw5FBKM3+CUp/pS+1CFjgQ0dpYdersco4qAxNwN+3OkrJp3ixKW9mSxYfMvT9Hn8NOLwBcwPM1wu+GDwiyl3d2KOvVFi3sbzZIWdhUrskQFia8ULYZOu/nsoT5+sKIfogiM7kAlmHyfX2QPFGNxsbGgX47AbFnHdcxd+F7avB9Xf3PpJPc0pwNkUEZoWIM04OKWwkjQjkEemyn9zWlZe04X92xi//kuSzhgegbV1V0HABmPeq3Q1siPkEyHcIkAEJ6VeclJIPdbaEA5rTTwIDAQAB",
+  "minimum_chrome_version": "110",
+  "permissions": [
+    "tabs",
+    "webNavigation",
+    "idle",
+    "nativeMessaging",
+    "storage",
+    "alarms",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "incognito": "spanning",
+  "action": {
+    "default_title": "History Logger",
+    "default_popup": "popup/popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content/common.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*",
+        "https://music.youtube.com/*"
+      ],
+      "js": [
+        "content/youtube.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://discord.com/*"
+      ],
+      "js": [
+        "content/discord.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
