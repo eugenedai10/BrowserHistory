@@ -330,5 +330,10 @@ def summarize(day):
 
 
 if __name__ == "__main__":
+    try:
+        import verify  # same directory: hash-chain + append-only check of the whole log directory
+        print("Log integrity:", verify.verify(LOG_DIR).status())
+    except Exception as e:  # never let the integrity check stop the summary
+        print("Log integrity: could not check (%s)" % e)
     for d in (sys.argv[1:] or [datetime.date.today().isoformat()]):
         summarize(d)

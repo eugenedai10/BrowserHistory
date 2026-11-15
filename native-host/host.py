@@ -18,6 +18,8 @@ import struct
 import sys
 import time
 
+import chainlog
+
 LOG_DIR = os.environ.get("CHROME_HISTORY_DIR") or os.path.expanduser("~/chrome-history")
 DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
@@ -51,24 +53,21 @@ def day_path(day):
     return os.path.join(LOG_DIR, day + ".jsonl")
 
 
-def append_lines(day, lines):
-    fd = os.open(day_path(day), os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
-    try:
-        os.write(fd, ("\n".join(lines) + "\n").encode("utf-8"))
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+def append_events(items):
+    """items: [(day, event dict)]. All writes go through chainlog: hash-chained and append-only."""
+    return chainlog.append(LOG_DIR, items)
 
 
 def handle_events(events):
-    by_day = {}
     today = datetime.date.today().isoformat()
+    items = []
     for ev in events:
-        ts = ev.get("ts") if isinstance(ev, dict) else None
+        if not isinstance(ev, dict):
+            ev = {"ts": now_iso(), "type": "invalid_event", "raw": str(ev)[:500]}
+        ts = ev.get("ts")
         day = ts[:10] if isinstance(ts, str) and DAY_RE.match(ts) else today
-        by_day.setdefault(day, []).append(json.dumps(ev, ensure_ascii=False, separators=(",", ":")))
-    for day, lines in by_day.items():
-        append_lines(day, lines)
+        items.append((day, ev))
+    append_events(items)
     return {"ok": True, "n": len(events)}
 
 
@@ -91,7 +90,7 @@ def write_marker(kind, ts=None, **extra):
     ev.update(extra)
     try:
         ensure_dir()
-        append_lines(ev["ts"][:10], [json.dumps(ev, ensure_ascii=False, separators=(",", ":"))])
+        append_events([(ev["ts"][:10], ev)])
     except Exception:
         pass
 

@@ -25,6 +25,7 @@ Uninstall: `./native-host/uninstall.sh` and remove the extension. Logs stay in `
 | `discord_channel` | guild/channel ids + names, dm, enter, leave, dur_active_s, messages_seen (content is NOT logged) |
 | `host_start` `host_stop` | written by the native host when the extension connects/disconnects. `host_stop.cause` is `browser_exit` (Chrome itself went away within 5s: quit or crash) or `extension_stopped` (Chrome still running: extension reloaded, disabled, removed, or its worker restarted) |
 | `logger_start` | extension worker started (cause: browser_start / extension_reload / worker_restart / install / enabled) |
+| (all lines) | `seq`, `prev`, `h`: hash-chain fields added by the writer (see Protecting the logs) |
 | `heartbeat` | every 30s (`heartbeatSeconds` in config.js): tracked_tabs, queue, idle, focused, host_ok, incognito_allowed |
 | `monitor_start` `monitor_heartbeat` | written by the external monitor (below): its start (cause login/restart) and a 60s liveness beat with `chrome_running`, `extension_connected` |
 | `browser_start` `browser_stop` | external monitor: Chrome's main process appeared/disappeared (`chrome_pid`, `observed_late`, `ran_s`) |
@@ -53,6 +54,24 @@ data it falls back to the host-based labels below.
 Limits: it detects but cannot prevent quitting Chrome or disabling the extension; a clean quit and a crash look the same
 from outside; the repo path is baked into the plist, so re-run `install.sh` if you move the repo. Chrome only by default
 (edit `CHROME_RE` in `monitor/monitor.py` for Brave/Edge).
+
+## Protecting the logs
+Two layers make the logs hard to change by accident and make tampering visible:
+1. **Append-only flags.** Every day file is marked `uappend` (`chflags`) as soon as it is created. Editors, `rm`, `mv`,
+   `>` and `sed -i` fail with "Operation not permitted"; the logger can still append.
+2. **Hash chain.** Every line carries `seq`, `prev` and `h` (a hash of the line and the previous hash) across all days,
+   with the head in `~/chrome-history/.head`. `python3 tools/verify.py` reports edited, deleted, reordered or
+   truncated lines, missing files, and legacy (pre-chain) files whose content changed. `tools/summary.py` prints the
+   result as "Log integrity" on every run. Logs from before this feature are covered by a digest recorded in the
+   first `chain_start` line.
+
+Archive by copying (`cp`). Deleting or editing a day file is reported as tampering on purpose, so to prune old logs you
+must first `chflags nouappend FILE`, and `verify` will keep flagging the gap.
+
+**Limits.** This is not a lock. As an admin you (or anyone with your password) can clear the flag with
+`chflags nouappend`, and a script that rewrites every later line, `.head` included, defeats the chain. For stronger
+guarantees use a root-owned logging daemon or an off-machine append-only copy. Run `python3 native-host/test_chainlog.py`
+for the tests.
 
 ## Config
 `extension/config.js`: `blocklist` (hostnames never logged), `stripQuery`, idle threshold, flush cadence,
