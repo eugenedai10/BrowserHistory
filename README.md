@@ -107,6 +107,23 @@ python3 tools/summary.py            # today
 python3 tools/summary.py 2026-11-13
 ```
 
+## Summary UI
+A local web page to browse the same summary day by day:
+```bash
+python3 tools/serve.py              # http://127.0.0.1:9898/
+python3 tools/serve.py --port 9000 --open
+python3 tools/test_summary.py       # tests for the data layer and the server
+```
+Pick a day with the arrows (or the ←/→ keys), the date field, **Today** / **Latest**, or by clicking a bar in the
+"All days" chart (switch it between active time, YouTube and visits). Each day shows totals, active time by hour, top
+sites, YouTube (videos and Shorts: found-via, top channels, every session in order), Discord, searches, and logging
+health (coverage bar, gaps with causes, log integrity). Every chart has a **Table** view. The URL hash (`#2026-11-15`)
+deep-links to a day, and today's page refreshes itself every minute.
+
+It uses the same code as `summary.py`, so the numbers match the CLI. The server is read-only and listens on
+127.0.0.1 only; because the logs hold full URLs and your own Discord posts, requests with any other `Host` header are
+refused and no CORS headers are sent. It makes no external requests (no CDN, fonts or analytics).
+
 ## Notes
 - Defaults log everything, including full URLs (which can contain tokens). Use `blocklist`/`stripQuery` if that matters.
 - If the native host is unavailable, events queue in extension storage (max 20k) and are delivered later; the icon shows `!`.

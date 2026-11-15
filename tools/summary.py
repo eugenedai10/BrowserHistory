@@ -4,10 +4,14 @@
 Usage: summary.py [YYYY-MM-DD ...]     (default: today)
 """
 import collections
+import contextlib
 import datetime
+import io
 import json
 import os
+import re
 import sys
+import threading
 from urllib.parse import urlparse
 
 LOG_DIR = os.environ.get("CHROME_HISTORY_DIR") or os.path.expanduser("~/chrome-history")
@@ -156,24 +160,25 @@ class Timeline:
         return best[1] if best[0] >= d * 0.5 else None
 
 
-def report_gaps(events, day):
+def gap_data(events, day):
+    """Coverage analysis shared by the CLI report and the web UI. None when the day has no events."""
     allpts = sorted(((parse_ts(e.get("ts")), e.get("type"), e) for e in events if parse_ts(e.get("ts"))), key=lambda x: x[0])
     pts = [x for x in allpts if x[1] not in MONITOR_TYPES]
     if not allpts:
-        return
+        return None
     today = day == datetime.date.today().isoformat()
     now = datetime.datetime.now().astimezone()
     hi = max(now, allpts[-1][0]) if today else allpts[-1][0]
     tl = Timeline(allpts, hi)
+    g = {"tl": tl, "today": today, "hi": hi, "markers": False, "skipped": 0, "gaps": [], "tail": None,
+         "first_ts": None, "last_ts": None, "span": 0, "lost": 0}
 
     # Events logged before the first marker predate gap tracking (no heartbeats), so gaps there are meaningless.
     first = next((i for i, (_, k, _e) in enumerate(pts) if k in MARKERS), None)
     if first is None:
-        print("\nLogging coverage: no heartbeat/host markers in this log (written before gap tracking)")
-        if tl.present:
-            report_monitor(tl, today, hi)
-        return
-    skipped = first
+        return g
+    g["markers"] = True
+    g["skipped"] = first
     pts = pts[first:]
 
     def next_start_cause(i):
@@ -202,15 +207,10 @@ def report_gaps(events, day):
         d = (t2 - t1).total_seconds()
         if d > GAP_SECONDS:
             gaps.append((t1, t2, d, label(t1, k1, e1, t2, next_start_cause(i + 1))))
-    span = (pts[-1][0] - pts[0][0]).total_seconds()
-    lost = sum(g[2] for g in gaps)
-    print(f"\nLogging coverage: {fmt(span - lost)} of {fmt(span)} between {pts[0][0]:%H:%M:%S} and {pts[-1][0]:%H:%M:%S}")
-    if skipped:
-        print(f"  ({skipped} earlier events ignored: logged before gap tracking started)")
-    if not gaps:
-        print(f"  no gaps over {fmt(GAP_SECONDS)}")
-    for t1, t2, d, kind in gaps:
-        print(f"  {t1:%H:%M:%S} -> {t2:%H:%M:%S}  {fmt(d):>7}  {kind}")
+    g["gaps"] = gaps
+    g["first_ts"], g["last_ts"] = pts[0][0], pts[-1][0]
+    g["span"] = (pts[-1][0] - pts[0][0]).total_seconds()
+    g["lost"] = sum(x[2] for x in gaps)
 
     # Trailing state: the last thing in the log is not followed by anything, so it never shows up as a gap.
     t_last, k_last, e_last = pts[-1]
@@ -218,17 +218,36 @@ def report_gaps(events, day):
     tail = (hi - t_last).total_seconds()
     monitor_tail = tl.explain(t_last, hi) if tail > GAP_SECONDS else None
     if monitor_tail:
-        print(f"  {t_last:%H:%M:%S} -> {end_name}  {fmt(tail):>7}  {monitor_tail}")
+        g["tail"] = f"  {t_last:%H:%M:%S} -> {end_name}  {fmt(tail):>7}  {monitor_tail}"
     elif k_last == "host_stop":
-        print(f"  {t_last:%H:%M:%S} -> {end_name}  {stop_label(e_last, None)}; nothing logged after this")
+        g["tail"] = f"  {t_last:%H:%M:%S} -> {end_name}  {stop_label(e_last, None)}; nothing logged after this"
     elif today:
         if tail > GAP_SECONDS:
-            print(f"  {t_last:%H:%M:%S} -> now  {fmt(tail):>7}  UNEXPECTED (no host_stop and no events since)")
+            g["tail"] = f"  {t_last:%H:%M:%S} -> now  {fmt(tail):>7}  UNEXPECTED (no host_stop and no events since)"
     else:
-        print(f"  {t_last:%H:%M:%S} -> (end of log)  log ends without host_stop (crash, or it continues in the next day's file)")
+        g["tail"] = f"  {t_last:%H:%M:%S} -> (end of log)  log ends without host_stop (crash, or it continues in the next day's file)"
+    return g
 
-    if tl.present:
-        report_monitor(tl, today, hi)
+
+def report_gaps(events, day):
+    g = gap_data(events, day)
+    if g is None:
+        return
+    if not g["markers"]:
+        print("\nLogging coverage: no heartbeat/host markers in this log (written before gap tracking)")
+    else:
+        span, lost, gaps = g["span"], g["lost"], g["gaps"]
+        print(f"\nLogging coverage: {fmt(span - lost)} of {fmt(span)} between {g['first_ts']:%H:%M:%S} and {g['last_ts']:%H:%M:%S}")
+        if g["skipped"]:
+            print(f"  ({g['skipped']} earlier events ignored: logged before gap tracking started)")
+        if not gaps:
+            print(f"  no gaps over {fmt(GAP_SECONDS)}")
+        for t1, t2, d, kind in gaps:
+            print(f"  {t1:%H:%M:%S} -> {t2:%H:%M:%S}  {fmt(d):>7}  {kind}")
+        if g["tail"]:
+            print(g["tail"])
+    if g["tl"].present:
+        report_monitor(g["tl"], g["today"], g["hi"])
 
 
 def report_monitor(tl, today, hi):
@@ -336,11 +355,8 @@ def report_incognito(events, day):
         print(f"  {s:%H:%M:%S} -> {end}  {fmt((e - s).total_seconds()):>7}{began}{tail}")
 
 
-def summarize(day):
-    events = load(day)
-    print(f"\n=== {day}: {len(events)} events ===")
-    if not events:
-        return
+def aggregate(events):
+    """Per-day totals shared by the CLI report and the web UI (serve.py)."""
     dom_active = collections.Counter()
     dom_total = collections.Counter()
     visits = 0
@@ -371,6 +387,18 @@ def summarize(day):
             discord[k][1] += e.get("messages_seen", 0)
         elif t == "discord_post":
             posts[(e.get("guild_name") or e.get("guild_id"), e.get("channel_name") or e.get("channel_id"))] += 1
+    return {"dom_active": dom_active, "dom_total": dom_total, "visits": visits, "clicks": clicks,
+            "searches": searches, "yt": yt, "discord": discord, "posts": posts}
+
+
+def summarize(day):
+    events = load(day)
+    print(f"\n=== {day}: {len(events)} events ===")
+    if not events:
+        return
+    agg = aggregate(events)
+    dom_active, dom_total, visits, clicks = agg["dom_active"], agg["dom_total"], agg["visits"], agg["clicks"]
+    searches, yt, discord, posts = agg["searches"], agg["yt"], agg["discord"], agg["posts"]
 
     report_gaps(events, day)
     report_logger_state(events, day)
@@ -427,6 +455,134 @@ def summarize(day):
         print("\nSearches:")
         for eng, q in searches[:15]:
             print(f"  [{eng}] {q}")
+
+
+# ---------- data API for the web UI (tools/serve.py) ----------
+DAY_FILE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.jsonl$")
+_print_lock = threading.Lock()  # health() redirects the process-wide stdout
+
+
+def list_days():
+    try:
+        names = os.listdir(LOG_DIR)
+    except OSError:
+        return []
+    return sorted(m.group(1) for m in map(DAY_FILE_RE.match, names) if m)
+
+
+def hourly_active(events):
+    """Active seconds per hour of day (a visit's active time is spread over the hours it spanned)."""
+    hours = [0.0] * 24
+    for e in events:
+        if e.get("type") != "visit":
+            continue
+        active = e.get("dur_active_s") or 0
+        s, t = parse_ts(e.get("start")), parse_ts(e.get("end"))
+        if not active or not s:
+            continue
+        if not t or t <= s:
+            hours[s.hour] += active
+            continue
+        total, cur = (t - s).total_seconds(), s
+        while cur < t:
+            nxt = min(t, cur.replace(minute=0, second=0, microsecond=0) + datetime.timedelta(hours=1))
+            hours[cur.hour] += active * (nxt - cur).total_seconds() / total
+            cur = nxt
+    return [round(h, 1) for h in hours]
+
+
+def _yt_kind(rows):
+    chan = collections.Counter()
+    for e in rows:
+        chan[e.get("channel") or "?"] += e.get("watched_s", 0)
+    src = collections.Counter(e.get("source") or "?" for e in rows)
+    far = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
+    sessions = []
+    for e in sorted(rows, key=lambda x: parse_ts(x.get("start") or x.get("ts")) or far):
+        sessions.append({
+            "start": e.get("start") or e.get("ts"), "end": e.get("end") or e.get("ts"),
+            "title": (e.get("title") or "").replace("\n", " "), "channel": e.get("channel") or "?",
+            "watched_s": e.get("watched_s", 0), "length_s": e.get("length_s"), "source": e.get("source") or "?",
+            "finished": bool(e.get("finished")), "loops": e.get("loops", 0), "partial": bool(e.get("partial")),
+        })
+    return {
+        "count": len(rows), "watched_s": round(sum(e.get("watched_s", 0) for e in rows), 1),
+        "finished": sum(1 for e in rows if e.get("finished")), "loops": sum(e.get("loops", 0) for e in rows),
+        "sources": [{"name": k, "n": n} for k, n in src.most_common()],
+        "channels": [{"name": k, "s": round(v, 1)} for k, v in chan.most_common(8)],
+        "sessions": sessions,
+    }
+
+
+def day_data(day, events=None):
+    """Everything the UI shows for one day, JSON-serializable (numbers come from aggregate(), like the CLI)."""
+    events = load(day) if events is None else events
+    a = aggregate(events)
+    yt = list(a["yt"].values())
+    return {
+        "day": day, "events": len(events), "visits": a["visits"], "clicks": a["clicks"],
+        "active_s": round(sum(a["dom_active"].values()), 1), "open_s": round(sum(a["dom_total"].values()), 1),
+        "top_sites": [{"host": h, "active_s": round(v, 1), "open_s": round(a["dom_total"][h], 1)}
+                      for h, v in a["dom_active"].most_common(12)],
+        "hourly": hourly_active(events),
+        "searches": [{"engine": en, "query": q} for en, q in a["searches"]],
+        "youtube": {k: _yt_kind([e for e in yt if e.get("kind") == k]) for k in ("video", "short")},
+        "discord": {
+            "channels": [{"guild": g, "channel": c, "s": round(v[0], 1), "msgs": v[1], "posts": a["posts"].get((g, c), 0)}
+                         for (g, c), v in sorted(a["discord"].items(), key=lambda kv: -kv[1][0])],
+            "total_posts": sum(a["posts"].values()),
+        },
+    }
+
+
+def health(day, events=None):
+    """Logging coverage for one day: structured gaps plus the CLI's free-text sections as 'details'."""
+    events = load(day) if events is None else events
+    g = gap_data(events, day)
+    out = {"markers": False, "gaps": [], "tail": None, "details": ""}
+    if g is None:
+        return out
+    iso = lambda t: t.isoformat(timespec="seconds") if t else None
+    out.update(markers=g["markers"], skipped=g["skipped"], first=iso(g["first_ts"]), last=iso(g["last_ts"]),
+               span_s=g["span"], lost_s=g["lost"], tail=(g["tail"] or "").strip() or None,
+               gaps=[{"from": iso(t1), "to": iso(t2), "secs": d, "label": label} for t1, t2, d, label in g["gaps"]])
+    buf = io.StringIO()
+    with _print_lock, contextlib.redirect_stdout(buf):
+        report_logger_state(events, day)
+        report_incognito(events, day)
+        if g["tl"].present:
+            report_monitor(g["tl"], g["today"], g["hi"])
+    out["details"] = buf.getvalue().strip("\n")
+    return out
+
+
+_trend_cache = {}  # day -> ((mtime_ns, size), row)
+
+
+def trend():
+    """One light row per available day; a day is only re-read when its file changed."""
+    rows = []
+    for day in list_days():
+        path = os.path.join(LOG_DIR, day + ".jsonl")
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        key = (st.st_mtime_ns, st.st_size)
+        hit = _trend_cache.get(day)
+        if not hit or hit[0] != key:
+            events = load(day)
+            a = aggregate(events)
+            yt = list(a["yt"].values())
+            row = {
+                "day": day, "events": len(events), "visits": a["visits"],
+                "active_s": round(sum(a["dom_active"].values()), 1),
+                "yt_video_s": round(sum(e.get("watched_s", 0) for e in yt if e.get("kind") == "video"), 1),
+                "yt_short_s": round(sum(e.get("watched_s", 0) for e in yt if e.get("kind") == "short"), 1),
+            }
+            hit = _trend_cache[day] = (key, row)
+        rows.append(hit[1])
+    return rows
 
 
 if __name__ == "__main__":
