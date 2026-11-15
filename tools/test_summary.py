@@ -42,6 +42,10 @@ EVENTS = [
      "watched_s": 50, "length_s": 100, "start": ts("10:19:00"), "end": ts("10:21:00"), "source": "home", "finished": True},
     {"ts": ts("10:22:00"), "type": "yt_session", "sid": "s2", "kind": "short", "title": "S", "channel": "C2",
      "watched_s": 20, "length_s": 15, "start": ts("10:21:30"), "end": ts("10:22:00"), "source": "shorts_swipe", "loops": 2},
+    # an audible YouTube embed on another site: its own category, never mixed into videos or Shorts
+    {"ts": ts("10:50:00"), "type": "yt_session", "sid": "e1", "kind": "embed", "title": "Embed T", "channel": "C3",
+     "watched_s": 40, "length_s": 300, "start": ts("10:49:00"), "end": ts("10:50:00"), "source": "embed",
+     "page_url": "https://news.example/story"},
     {"ts": ts("10:40:00"), "type": "discord_channel", "guild_name": "G", "channel_name": "general", "dur_active_s": 30, "messages_seen": 4},
     {"ts": ts("10:41:00"), "type": "discord_post", "guild_name": "G", "channel_name": "general"},
 ]
@@ -85,6 +89,16 @@ class DataTests(unittest.TestCase):
         self.assertEqual((yt["short"]["count"], yt["short"]["loops"]), (1, 2))
         self.assertEqual(yt["video"]["channels"], [{"name": "C1", "s": 50}])
 
+    def test_embeds_are_their_own_category(self):
+        yt = summary.day_data(DAY)["youtube"]
+        self.assertEqual((yt["embed"]["count"], yt["embed"]["watched_s"]), (1, 40))
+        self.assertEqual(yt["embed"]["sessions"][0]["host"], "news.example")
+        self.assertIsNone(yt["video"]["sessions"][0]["host"])
+        self.assertEqual((yt["video"]["count"], yt["video"]["watched_s"]), (1, 50), "embeds must not leak into videos")
+        self.assertEqual(yt["short"]["count"], 1)
+        row = next(r for r in summary.trend() if r["day"] == DAY)
+        self.assertEqual((row["yt_video_s"], row["yt_short_s"], row["yt_embed_s"]), (50, 20, 40))
+
     def test_discord(self):
         dc = summary.day_data(DAY)["discord"]
         self.assertEqual(dc["total_posts"], 1)
@@ -119,6 +133,8 @@ class DataTests(unittest.TestCase):
         out = buf.getvalue()
         self.assertIn("visits: 2   link clicks: 1   searches: 1", out)
         self.assertIn("YouTube videos: 1 watched, 50s total, 1 finished", out)
+        self.assertIn("YouTube embedded in other sites (audible only): 1 watched, 40s total", out)
+        self.assertIn("on news.example", out)
         self.assertIn("Logging coverage:", out)
         self.assertIn("UNEXPECTED", out)
 

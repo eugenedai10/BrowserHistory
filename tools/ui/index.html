@@ -9,7 +9,7 @@
     color-scheme: light;
     --page: #f9f9f7;  --surface: #fcfcfb;  --ink: #0b0b0b;  --ink2: #52514e;  --muted: #898781;
     --grid: #e1e0d9;  --axis: #c3c2b7;  --border: rgba(11,11,11,.10);  --wash: rgba(11,11,11,.05);
-    --s1: #2a78d6;  --s2: #eb6834;  --track: #cde2fb;
+    --s1: #2a78d6;  --s2: #eb6834;  --s3: #1baf7a;  --track: #cde2fb;
     --good: #0ca30c;  --good-text: #006300;  --warning: #fab219;  --critical: #d03b3b;
     --shadow: 0 6px 24px rgba(0,0,0,.14);
   }
@@ -18,7 +18,7 @@
       color-scheme: dark;
       --page: #0d0d0d;  --surface: #1a1a19;  --ink: #f0efec;  --ink2: #c3c2b7;  --muted: #898781;
       --grid: #2c2c2a;  --axis: #383835;  --border: rgba(255,255,255,.10);  --wash: rgba(255,255,255,.06);
-      --s1: #3987e5;  --s2: #d95926;  --track: #184f95;
+      --s1: #3987e5;  --s2: #d95926;  --s3: #199e70;  --track: #184f95;
       --good-text: #0ca30c;  --shadow: 0 6px 24px rgba(0,0,0,.5);
     }
   }
@@ -26,7 +26,7 @@
     color-scheme: dark;
     --page: #0d0d0d;  --surface: #1a1a19;  --ink: #f0efec;  --ink2: #c3c2b7;  --muted: #898781;
     --grid: #2c2c2a;  --axis: #383835;  --border: rgba(255,255,255,.10);  --wash: rgba(255,255,255,.06);
-    --s1: #3987e5;  --s2: #d95926;  --track: #184f95;
+    --s1: #3987e5;  --s2: #d95926;  --s3: #199e70;  --track: #184f95;
     --good-text: #0ca30c;  --shadow: 0 6px 24px rgba(0,0,0,.5);
   }
 
@@ -382,7 +382,7 @@ function trendCard() {
   const rows = st.trend.slice(-60);
   const metrics = {
     active:  { name: 'Active time', kind: 'time',  vals: (r) => [r.active_s], colors: () => [cssVar('--s1')], names: ['Active time'] },
-    youtube: { name: 'YouTube',     kind: 'time',  vals: (r) => [r.yt_video_s, r.yt_short_s], colors: () => [cssVar('--s1'), cssVar('--s2')], names: ['Videos', 'Shorts'] },
+    youtube: { name: 'YouTube',     kind: 'time',  vals: (r) => [r.yt_video_s, r.yt_short_s, r.yt_embed_s || 0], colors: () => [cssVar('--s1'), cssVar('--s2'), cssVar('--s3')], names: ['Videos', 'Shorts', 'Embedded'] },
     visits:  { name: 'Visits',      kind: 'count', vals: (r) => [r.visits], colors: () => [cssVar('--s1')], names: ['Visits'] },
   };
   const M = () => metrics[st.metric];
@@ -420,10 +420,11 @@ function trendCard() {
 }
 
 function tiles(d) {
-  const yv = d.youtube.video, ys = d.youtube.short;
+  const yv = d.youtube.video, ys = d.youtube.short;  // embeds are their own category
   return h('div', { class: 'tiles' },
     tile('Active time', fmtShort(d.active_s), `${fmtShort(d.open_s)} tabs open`),
     tile('YouTube', fmtShort(yv.watched_s + ys.watched_s), `Videos ${fmtShort(yv.watched_s)} · Shorts ${fmtShort(ys.watched_s)}`),
+    tile('Embedded videos', fmtShort(d.youtube.embed.watched_s), `${plural(d.youtube.embed.count, 'video')}, audible only`),
     tile('Visits', d.visits.toLocaleString()),
     tile('Link clicks', d.clicks.toLocaleString()),
     tile('Searches', d.searches.length.toLocaleString()),
@@ -453,7 +454,7 @@ function sessionsList(rows, key, accent) {
   const limit = st.expand[key] ? rows.length : 12;
   const list = rows.slice(0, limit).map((s) => {
     const pct = s.length_s ? Math.min(100, (s.watched_s / s.length_s) * 100) : 0;
-    const notes = [s.source, s.finished && 'finished', s.loops && plural(s.loops, 'loop'), s.partial && 'tab closed mid-video'].filter(Boolean).join(' · ');
+    const notes = [s.host ? 'on ' + s.host : s.source, s.finished && 'finished', s.loops && plural(s.loops, 'loop'), s.partial && 'tab closed mid-video'].filter(Boolean).join(' · ');
     return h('div', { class: 'sess' },
       h('div', { class: 'time' }, `${clock(s.start)} → ${clock(s.end)}`),
       h('div', null, h('div', { class: 't' }, s.title || '(no title)'), h('div', { class: 'm' }, `${s.channel} · ${notes}`)),
@@ -468,10 +469,16 @@ function sessionsList(rows, key, accent) {
   return box;
 }
 
+function hostRows(sessions) {  // watch time per site hosting the embeds
+  const by = {};
+  for (const x of sessions) by[x.host || '?'] = (by[x.host || '?'] || 0) + x.watched_s;
+  return Object.entries(by).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([name, v]) => ({ name, v }));
+}
+
 function youtubeCard(d) {
-  const kinds = [['video', 'Videos', '--s1'], ['short', 'Shorts', '--s2']];
-  const total = d.youtube.video.count + d.youtube.short.count;
-  const card = h('section', { class: 'card' }, h('div', { class: 'card-h' }, h('div', null, h('h2', null, 'YouTube'), h('p', { class: 'sub' }, 'Watch time excludes ads and paused time'))));
+  const kinds = [['video', 'Videos', '--s1'], ['short', 'Shorts', '--s2'], ['embed', 'Embedded', '--s3']];
+  const total = d.youtube.video.count + d.youtube.short.count + d.youtube.embed.count;
+  const card = h('section', { class: 'card' }, h('div', { class: 'card-h' }, h('div', null, h('h2', null, 'YouTube'), h('p', { class: 'sub' }, 'Watch time excludes ads and paused time. Embedded players (on other sites) count only while audible.'))));
   if (!total) { card.append(h('p', { class: 'empty' }, 'No YouTube watched on this day.')); return card; }
   const tabs = h('div', { class: 'tabs', role: 'tablist' });
   const panel = h('div', { role: 'tabpanel' });
@@ -483,11 +490,13 @@ function youtubeCard(d) {
     panel.replaceChildren(...[
       h('div', { class: 'ytstats' },
         h('div', null, h('div', { class: 'l' }, 'Watched'), h('div', { class: 'v' }, fmtShort(y.watched_s))),
-        h('div', null, h('div', { class: 'l' }, kind === 'short' ? 'Shorts' : 'Videos'), h('div', { class: 'v' }, y.count)),
+        h('div', null, h('div', { class: 'l' }, { video: 'Videos', short: 'Shorts', embed: 'Embedded videos' }[kind]), h('div', { class: 'v' }, y.count)),
         h('div', null, h('div', { class: 'l' }, 'Finished'), h('div', { class: 'v' }, y.finished)),
         kind === 'short' && h('div', null, h('div', { class: 'l' }, 'Loops'), h('div', { class: 'v' }, y.loops))),
       y.count ? h('div', { class: 'cols' },
-        h('div', null, h('h3', null, 'Found via'), barList(y.sources.map((s) => ({ name: s.name, v: s.n })), { fmtVal: (n) => String(n), accent })),
+        kind === 'embed'
+          ? h('div', null, h('h3', null, 'Embedded on'), barList(hostRows(y.sessions), { fmtVal: fmtShort, accent }))
+          : h('div', null, h('h3', null, 'Found via'), barList(y.sources.map((s) => ({ name: s.name, v: s.n })), { fmtVal: (n) => String(n), accent })),
         h('div', null, h('h3', null, 'Top channels'), barList(y.channels.slice(0, 6).map((c) => ({ name: c.name, v: c.s })), { fmtVal: fmtShort, accent })))
         : h('p', { class: 'empty' }, 'None on this day.'),
       y.count ? [h('h3', null, 'Everything watched, in order'), sessionsList(y.sessions, 'yt-' + kind, accent)] : null,

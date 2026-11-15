@@ -409,10 +409,12 @@ def summarize(day):
         print(f"  {fmt(a):>8} active / {fmt(dom_total[host]):>8} open   {host}")
 
     if yt:
-        for kind, label in (("video", "YouTube videos"), ("short", "YouTube Shorts")):
+        for kind, label in (("video", "YouTube videos"), ("short", "YouTube Shorts"),
+                            ("embed", "YouTube embedded in other sites (audible only)")):
             rows = [e for e in yt.values() if e.get("kind") == kind]
             if not rows:
-                print(f"\n{label}: none")
+                if kind != "embed":  # embeds are rare: no line when there are none
+                    print(f"\n{label}: none")
                 continue
             watched = sum(e.get("watched_s", 0) for e in rows)
             finished = sum(1 for e in rows if e.get("finished"))
@@ -439,6 +441,8 @@ def summarize(day):
                     notes.append("finished")
                 if e.get("loops"):
                     notes.append(f"{e['loops']} loop{'s' if e['loops'] != 1 else ''}")
+                if kind == "embed" and e.get("page_url"):
+                    notes.append("on " + (urlparse(e["page_url"]).hostname or "?"))
                 if e.get("partial"):
                     notes.append("partial: tab closed/crashed")
                 title = (e.get("title") or "(no title)").replace("\n", " ")
@@ -504,6 +508,7 @@ def _yt_kind(rows):
             "title": (e.get("title") or "").replace("\n", " "), "channel": e.get("channel") or "?",
             "watched_s": e.get("watched_s", 0), "length_s": e.get("length_s"), "source": e.get("source") or "?",
             "finished": bool(e.get("finished")), "loops": e.get("loops", 0), "partial": bool(e.get("partial")),
+            "host": (urlparse(e["page_url"]).hostname if e.get("page_url") else None),  # site hosting an embed
         })
     return {
         "count": len(rows), "watched_s": round(sum(e.get("watched_s", 0) for e in rows), 1),
@@ -526,7 +531,7 @@ def day_data(day, events=None):
                       for h, v in a["dom_active"].most_common(12)],
         "hourly": hourly_active(events),
         "searches": [{"engine": en, "query": q} for en, q in a["searches"]],
-        "youtube": {k: _yt_kind([e for e in yt if e.get("kind") == k]) for k in ("video", "short")},
+        "youtube": {k: _yt_kind([e for e in yt if e.get("kind") == k]) for k in ("video", "short", "embed")},
         "discord": {
             "channels": [{"guild": g, "channel": c, "s": round(v[0], 1), "msgs": v[1], "posts": a["posts"].get((g, c), 0)}
                          for (g, c), v in sorted(a["discord"].items(), key=lambda kv: -kv[1][0])],
@@ -579,6 +584,7 @@ def trend():
                 "active_s": round(sum(a["dom_active"].values()), 1),
                 "yt_video_s": round(sum(e.get("watched_s", 0) for e in yt if e.get("kind") == "video"), 1),
                 "yt_short_s": round(sum(e.get("watched_s", 0) for e in yt if e.get("kind") == "short"), 1),
+                "yt_embed_s": round(sum(e.get("watched_s", 0) for e in yt if e.get("kind") == "embed"), 1),
             }
             hit = _trend_cache[day] = (key, row)
         rows.append(hit[1])

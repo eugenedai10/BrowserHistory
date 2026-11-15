@@ -12,6 +12,7 @@
     watchChannel: ['ytd-watch-metadata #owner ytd-channel-name a', '#owner #channel-name a', 'ytd-video-owner-renderer a'],
     shortsTitle: ['ytd-reel-video-renderer[is-active] yt-shorts-video-title-view-model h2', 'ytd-reel-video-renderer[is-active] h2', 'ytd-reel-video-renderer[is-active] .title'],
     shortsChannel: ['ytd-reel-video-renderer[is-active] ytd-channel-name a', 'ytd-reel-video-renderer[is-active] a[href^="/@"]'],
+    embedTitle: ['.ytp-title-link', '.ytp-title-text a', '.ytp-title-text'],
     liked: 'ytd-watch-metadata like-button-view-model button[aria-pressed="true"], ytd-watch-metadata #segmented-like-button button[aria-pressed="true"]',
     likeBtn: 'ytd-watch-metadata like-button-view-model button, ytd-watch-metadata #segmented-like-button button',
     subscribed: 'ytd-watch-metadata ytd-subscribe-button-renderer[subscribed]',
@@ -55,6 +56,9 @@
     if (m) return { id: m[1], kind: 'short' };
     m = u.pathname.match(/^\/live\/([\w-]{5,})/);
     if (m) return { id: m[1], kind: 'video' };
+    // Embedded player (an iframe on another site). 'videoseries' is a playlist embed: the video id is not in the URL.
+    m = u.pathname.match(/^\/embed\/([\w-]{5,})/);
+    if (m && m[1] !== 'videoseries') return { id: m[1], kind: 'embed' };
     return { id: null, kind: null };
   }
 
@@ -92,12 +96,14 @@
 
   // oEmbed gives title + channel by video id, independent of YouTube's (changing) page layout.
   const oembedCache = new Map(); // id -> {title, author} | null (failed)
-  function fetchOembed(id) {
+  // Embeds can live on youtube-nocookie.com, where a page fetch to youtube.com is cross-origin: ask the worker instead.
+  function fetchOembed(id, viaWorker) {
     if (oembedCache.has(id)) return;
     oembedCache.set(id, undefined); // in flight
     const url = 'https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent('https://www.youtube.com/watch?v=' + id);
-    fetch(url, { credentials: 'omit' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('oembed ' + r.status))))
+    (viaWorker
+      ? chrome.runtime.sendMessage({ k: 'yt_oembed', id }).then((r) => (r && r.ok ? r : Promise.reject(new Error('oembed worker'))))
+      : fetch(url, { credentials: 'omit' }).then((r) => (r.ok ? r.json() : Promise.reject(new Error('oembed ' + r.status)))))
       .then((j) => oembedCache.set(id, { title: clean(j.title), author: clean(j.author_name) }))
       .catch(() => oembedCache.set(id, null));
     if (oembedCache.size > 200) oembedCache.delete(oembedCache.keys().next().value);
@@ -111,11 +117,13 @@
       cur.channel = oe.author || cur.channel;
       return !!cur.title;
     }
-    if (cur.kind === 'short' && oe === undefined && Date.now() - cur.created < 3000) return false; // wait for oEmbed
+    if (cur.kind !== 'video' && oe === undefined && Date.now() - cur.created < 3000) return false; // wait for oEmbed
     let title = '', channel = '';
     if (cur.kind === 'short') {
       title = clean((qsa(SEL.shortsTitle) || {}).textContent);
       channel = clean((qsa(SEL.shortsChannel) || {}).textContent);
+    } else if (cur.kind === 'embed') {
+      title = clean((qsa(SEL.embedTitle) || {}).textContent);
     } else {
       const flexy = document.querySelector('ytd-watch-flexy');
       const fresh = !flexy || flexy.getAttribute('video-id') === cur.id; // avoid stale DOM from the previous video
@@ -126,7 +134,7 @@
     }
     if (!title) {
       const t = clean(document.title).replace(/^\(\d+\)\s*/, '').replace(/\s*-\s*YouTube( Music)?$/, '');
-      if (t && t !== 'YouTube') title = t;
+      if (t && t !== 'YouTube' && !/^YouTube video player$/i.test(t)) title = t; // the embed's generic title says nothing
     }
     if (title) cur.title = title;
     if (channel) cur.channel = channel;
@@ -192,12 +200,14 @@
     (document.fullscreenElement || document.documentElement).appendChild(host);
   }
   chrome.runtime.onMessage.addListener((msg) => {
+    if (window !== window.top) return; // embed iframes must not show the banner
     if (msg && msg.k === 'yt_reminder') showReminder(msg.message || 'Time to take a break.');
   });
 
   function newSession(loc) {
     let source;
-    if (lastClick && lastClick.id === loc.id && Date.now() - lastClick.at < 15000) source = lastClick.source;
+    if (loc.kind === 'embed') source = 'embed';
+    else if (lastClick && lastClick.id === loc.id && Date.now() - lastClick.at < 15000) source = lastClick.source;
     else if (prev && prev.kind === 'short' && loc.kind === 'short') source = 'shorts_swipe';
     else if (prev && prev.finished) source = 'autoplay';
     else source = document.referrer && !document.referrer.includes('youtube.com') ? 'external' : 'direct';
@@ -210,7 +220,7 @@
       watchedMs: 0, speedMs: 0, maxPos: 0, lastPos: 0, pauses: 0, seeks: 0, loops: 0, ads: 0,
       finished: false, wasAd: false, seekFrom: null,
     };
-    fetchOembed(loc.id);
+    fetchOembed(loc.id, loc.kind === 'embed');
   }
 
   function snapshot(v) {
@@ -259,7 +269,7 @@
       CH.send({ k: 'yt_live', ev: { ...ev } }); // final totals for the popup until the host log has the session
       if (!cur.metaReady) releaseBuffer();
       CH.send({ k: 'event', ev, clears: 'yt' });
-    } else if (Date.now() - cur.created > 3000) {
+    } else if (Date.now() - cur.created > 3000 && cur.kind !== 'embed') { // muted embeds are expected never to start
       // Diagnostic: a session lived >3s but never saw playback. Helps tune selectors for YouTube changes.
       CH.send({ k: 'event', ev: {
         ts: CH.isoLocal(), type: 'yt_unstarted', video_id: cur.id, kind: cur.kind, reason,
@@ -305,14 +315,16 @@
     }
     cur.wasAd = false;
 
-    const playing = !v.paused && !v.ended;
+    // An embed only counts while you can hear it: muted autoplay (news sites, hero videos) is not watching.
+    const audible = !v.muted && v.volume > 0;
+    const playing = !v.paused && !v.ended && (cur.kind !== 'embed' || audible);
     const pos = v.currentTime || 0;
 
     // accumulate watch time for the interval that just ended
     if (cur.playing && dt > 0 && dt < 5000) {
       cur.watchedMs += dt;
       cur.speedMs += dt * (v.playbackRate || 1);
-      tickMs[cur.kind] += dt;
+      if (cur.kind in tickMs) tickMs[cur.kind] += dt; // reminders cover videos and Shorts only, not embeds
     }
     // loop detection (Shorts loop instead of ending)
     const len = isFinite(v.duration) ? v.duration : cur.length;
@@ -379,7 +391,7 @@
   }
 
   // media events do not bubble: capture on document (also covers replaced <video> elements)
-  ['play', 'playing', 'pause', 'ended', 'waiting', 'ratechange', 'emptied'].forEach((t) =>
+  ['play', 'playing', 'pause', 'ended', 'waiting', 'ratechange', 'emptied', 'volumechange'].forEach((t) =>
     document.addEventListener(t, () => sample(true), true));
   document.addEventListener('seeking', onSeeking, true);
   document.addEventListener('seeked', () => { onSeeked(); sample(true); }, true);

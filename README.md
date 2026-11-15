@@ -20,8 +20,8 @@ Uninstall: `./native-host/uninstall.sh` and remove the extension. Logs stay in `
 | `visit` | url, title, referrer, opener_url, start, end, dur_total_s, dur_active_s, max_scroll_pct, words, est_read_min, reason |
 | `click` | page_url, href, text, new_tab, external, (YouTube: yt_source, yt_video_id) |
 | `search` | engine, query, url |
-| `yt_start` `yt_pause` `yt_resume` `yt_seek` `yt_end` | video_id, kind (video/short), title, channel, length_s, position_s (seek: from_s/to_s) |
-| `yt_session` | watched_s, max_position_s, pct_watched, finished, pauses, seeks, loops, ads, avg_speed, quality, captions, liked, subscribed, source (home/sidebar/search/autoplay/shorts_swipe/...), partial |
+| `yt_start` `yt_pause` `yt_resume` `yt_seek` `yt_end` | video_id, kind (video/short/embed), title, channel, length_s, position_s (seek: from_s/to_s) |
+| `yt_session` | watched_s, max_position_s, pct_watched, finished, pauses, seeks, loops, ads, avg_speed, quality, captions, liked, subscribed, source (home/sidebar/search/autoplay/shorts_swipe/embed/...), partial, page_url (embeds only: the site hosting the player) |
 | `yt_reminder` | kind (video/short), total_s (today's watch time of that kind), n (which reminder of the day) |
 | `discord_channel` | guild/channel ids + names, dm, enter, leave, dur_active_s, messages_seen (content is NOT logged) |
 | `host_start` `host_stop` | written by the native host when the extension connects/disconnects. `host_stop.cause` is `browser_exit` (Chrome itself went away within 5s: quit or crash) or `extension_stopped` (Chrome still running: extension reloaded, disabled, removed, or its worker restarted) |
@@ -73,6 +73,14 @@ must first `chflags nouappend FILE`, and `verify` will keep flagging the gap.
 `chflags nouappend`, and a script that rewrites every later line, `.head` included, defeats the chain. For stronger
 guarantees use a root-owned logging daemon or an off-machine append-only copy. Run `python3 native-host/test_chainlog.py`
 for the tests.
+
+## Embedded YouTube
+YouTube players embedded in other sites (`youtube.com/embed/...`, `youtube-nocookie.com/embed/...`) are logged as their
+own category, `kind: "embed"` (`source: "embed"`, `page_url` = the hosting page). They count **only while audible**:
+a muted autoplay never starts a session, and muting a playing embed stops the clock. They are shown separately in the
+toolbar popup, `summary.py` and the Summary UI, and are not included in the video/Shorts totals or the watch-time
+reminders. Playlist embeds (`/embed/videoseries`) are not tracked, since the video id is not in the URL. The
+hosting site's `blocklist` entry applies to its embeds too.
 
 ## Config
 `extension/config.js`: `blocklist` (hostnames never logged), `stripQuery`, idle threshold, flush cadence,

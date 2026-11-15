@@ -101,7 +101,7 @@ function remind(kind, totalMs, n, tab) {
     type: 'basic', iconUrl: chrome.runtime.getURL('icons/icon128.png'),
     title: 'YouTube reminder', message, priority: 1,
   }).catch(() => {});
-  if (tab) chrome.tabs.sendMessage(tab.id, { k: 'yt_reminder', kind, message }).catch(() => {});
+  if (tab) chrome.tabs.sendMessage(tab.id, { k: 'yt_reminder', kind, message }, { frameId: 0 }).catch(() => {}); // top frame only
   emit({ type: 'yt_reminder', kind, total_s: Math.round(totalMs / 1000), n }, tab);
 }
 
@@ -450,6 +450,12 @@ async function handleMessage(msg, sender) {
   await ready;
   const tab = sender && sender.tab;
   const s = tab ? tabs[tab.id] : null;
+  // Messages from an iframe (YouTube embeds) belong to the host tab: honour its blocklist, tag events with the
+  // host page, and keep each frame's in-flight snapshot separate (several embeds can live on one page).
+  const framed = !!(tab && sender.frameId > 0);
+  if (framed && blocked(tab.url)) return { ok: true };
+  const withHost = (ev) => (framed ? { ...ev, page_url: tab.url } : ev);
+  const pkey = (name) => (framed ? `${name}:${sender.frameId}` : name);
   switch (msg.k) {
     case 'page':
       if (s && stripHash(s.url) === stripHash(msg.url)) {
@@ -467,13 +473,24 @@ async function handleMessage(msg, sender) {
       break;
     case 'event':
       if (tab) {
-        emit(msg.ev, tab);
-        if (s && msg.clears) { s.pending[msg.clears] = null; persistSoon(); }
+        emit(withHost(msg.ev), tab);
+        if (s && msg.clears) { s.pending[pkey(msg.clears)] = null; persistSoon(); }
       }
       break;
     case 'state':
-      if (s) { s.pending[msg.name] = msg.ev; persistSoon(); }
+      if (s) { s.pending[pkey(msg.name)] = withHost(msg.ev); persistSoon(); }
       break;
+    case 'yt_oembed': {
+      // title/channel for an embed, fetched here because the iframe's origin may not be allowed to read it
+      if (!/^[\w-]{5,}$/.test(msg.id || '')) return { ok: false };
+      try {
+        const u = 'https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent('https://www.youtube.com/watch?v=' + msg.id);
+        const r = await fetch(u, { credentials: 'omit' });
+        if (!r.ok) return { ok: false };
+        const j = await r.json();
+        return { ok: true, title: j.title, author_name: j.author_name };
+      } catch { return { ok: false }; }
+    }
     case 'status': {
       const host = await ping();
       incognitoAllowed = await isIncognitoAllowed();

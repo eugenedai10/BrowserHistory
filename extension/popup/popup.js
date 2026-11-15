@@ -50,6 +50,7 @@ async function refresh() {
       const sessions = r.sessions || [];
       renderSection('video', sessions);
       renderSection('short', sessions);
+      renderSection('embed', sessions);
     }
   } catch {}
   setTimeout(refresh, 1000); // live while open (the popup page dies when it closes)
