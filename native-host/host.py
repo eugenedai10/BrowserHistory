@@ -13,6 +13,7 @@ import datetime
 import json
 import os
 import re
+import signal
 import struct
 import sys
 
@@ -78,6 +79,22 @@ def count_lines(path):
         return 0
 
 
+def now_iso():
+    return datetime.datetime.now().astimezone().isoformat(timespec="milliseconds")
+
+
+def write_marker(kind, **extra):
+    """Host-written marker. Because the host (not the extension) writes it, it shows up even when
+    the extension has been disabled/removed, which is what lets summary.py explain gaps."""
+    ev = {"ts": now_iso(), "type": kind, "pid": os.getpid()}
+    ev.update(extra)
+    try:
+        ensure_dir()
+        append_lines(ev["ts"][:10], [json.dumps(ev, ensure_ascii=False, separators=(",", ":"))])
+    except Exception:
+        pass
+
+
 def handle_ping():
     today = datetime.date.today().isoformat()
     path = day_path(today)
@@ -86,6 +103,17 @@ def handle_ping():
 
 def main():
     ensure_dir()
+    write_marker("host_start")
+    reason = "eof"
+    try:
+        loop()
+    except Exception as e:  # never die silently: record why
+        reason = "error: %s" % e
+    finally:
+        write_marker("host_stop", reason=reason)
+
+
+def loop():
     while True:
         try:
             msg = read_message()
@@ -101,9 +129,12 @@ def main():
                 send_message(handle_events(msg["events"]))
             else:
                 send_message({"ok": False, "error": "unknown request"})
+        except BrokenPipeError:
+            return
         except Exception as e:
             send_message({"ok": False, "error": str(e)})
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     main()

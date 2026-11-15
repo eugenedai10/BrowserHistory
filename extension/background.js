@@ -11,10 +11,16 @@ let queue = [];                 // events waiting for the native host
 let tabs = {};                  // tabId -> visit state (persisted; the worker may sleep at any time)
 let focusedWindowId = NO_WINDOW;
 let idleState = 'active';
-let paused = false;
 let hostStatus = { ok: null, error: null, lastFlush: null };
 let flushTimer = null;
 let flushing = false;
+let port = null;                // long-lived native-messaging port (keeps the service worker alive)
+let pending = [];               // requests awaiting a host reply, FIFO: {kind:'events', n} | {kind:'ping', resolve}
+let reconnectTimer = null;
+let backoff = 1000;
+let lastHeartbeat = 0;
+let incognitoAllowed = null;
+let startLogged = false;
 let persistTimer = null;
 let chain = Promise.resolve();  // serializes navigation handling
 
@@ -48,13 +54,12 @@ function persistSoon() {
   if (persistTimer) return;
   persistTimer = setTimeout(() => {
     persistTimer = null;
-    chrome.storage.local.set({ queue, tabs, paused }).catch(() => {});
+    chrome.storage.local.set({ queue, tabs }).catch(() => {});
   }, 250);
 }
 
 // ---------- event queue ----------
 function emit(ev, tabInfo) {
-  if (paused) return;
   const url = ev.url || ev.page_url;
   if (url && blocked(url)) return;
   const { ts, type, ...rest } = ev;
@@ -76,33 +81,95 @@ function scheduleFlush(delay) {
   flushTimer = setTimeout(() => { flushTimer = null; flush(); }, delay);
 }
 
-async function flush() {
-  await ready;
-  if (flushing || !queue.length) return;
-  flushing = true;
-  const batch = queue.slice(0, 200);
+// ---------- native host connection ----------
+function scheduleReconnect() {
+  if (reconnectTimer || port) return;
+  reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, backoff);
+  backoff = Math.min(backoff * 2, 30000);
+}
+
+function connect() {
+  if (port) return;
+  let p;
   try {
-    const r = await chrome.runtime.sendNativeMessage(HOST, { events: batch });
-    if (!r || !r.ok) throw new Error((r && r.error) || 'host error');
-    queue.splice(0, batch.length);
-    hostStatus = { ok: true, error: null, lastFlush: Date.now() };
-    persistSoon();
+    p = chrome.runtime.connectNative(HOST);
   } catch (e) {
     hostStatus = { ...hostStatus, ok: false, error: String((e && e.message) || e) };
-    flushing = false;
     updateBadge();
+    scheduleReconnect();
     return;
   }
+  port = p;
+  pending = [];
   flushing = false;
-  updateBadge();
+  p.onMessage.addListener(onHostMessage);
+  p.onDisconnect.addListener(() => {
+    const err = (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'host disconnected';
+    if (port === p) port = null;
+    for (const w of pending) if (w.kind === 'ping') w.resolve({ ok: false, error: err });
+    pending = [];
+    flushing = false;
+    hostStatus = { ...hostStatus, ok: false, error: err };
+    updateBadge();
+    scheduleReconnect();
+  });
+  // Verify the host is really there (a missing host shows up as an immediate disconnect), then drain.
+  ping();
   if (queue.length) scheduleFlush(0);
 }
 
+function onHostMessage(msg) {
+  const w = pending.shift();
+  if (!w) return;
+  if (w.kind === 'ping') { w.resolve(msg); if (msg && msg.ok) markHostOk(); return; }
+  flushing = false;
+  if (msg && msg.ok) {
+    queue.splice(0, w.n);
+    markHostOk();
+    persistSoon();
+    if (queue.length) scheduleFlush(0);
+  } else {
+    hostStatus = { ...hostStatus, ok: false, error: (msg && msg.error) || 'host error' };
+    updateBadge();
+  }
+}
+
+function markHostOk() {
+  hostStatus = { ok: true, error: null, lastFlush: Date.now() };
+  backoff = 1000;
+  updateBadge();
+}
+
+function ping() {
+  return new Promise((resolve) => {
+    if (!port) connect();
+    if (!port) { resolve({ ok: false, error: hostStatus.error || 'not connected' }); return; }
+    pending.push({ kind: 'ping', resolve });
+    try { port.postMessage({ cmd: 'ping' }); } catch (e) { pending.pop(); resolve({ ok: false, error: String(e) }); return; }
+    setTimeout(() => resolve({ ok: false, error: 'host did not answer' }), 3000);
+  });
+}
+
+async function flush() {
+  await ready;
+  if (!port) { connect(); return; } // the batch is sent once connect() succeeds
+  if (flushing || !queue.length) return;
+  const batch = queue.slice(0, 200);
+  flushing = true;
+  pending.push({ kind: 'events', n: batch.length });
+  try {
+    port.postMessage({ events: batch });
+  } catch (e) {
+    pending.pop();
+    flushing = false;
+    hostStatus = { ...hostStatus, ok: false, error: String((e && e.message) || e) };
+    updateBadge();
+  }
+}
+
 function updateBadge() {
-  let text = '';
-  if (paused) text = 'II'; else if (hostStatus.ok === false) text = '!';
-  chrome.action.setBadgeText({ text });
-  chrome.action.setBadgeBackgroundColor({ color: paused ? '#888888' : '#d93025' });
+  chrome.action.setBadgeText({ text: hostStatus.ok === false ? '!' : '' });
+  chrome.action.setBadgeBackgroundColor({ color: '#d93025' });
 }
 
 // ---------- visit tracking ----------
@@ -209,11 +276,11 @@ async function adoptOpenTabs() {
 // ---------- init (runs on every worker start) ----------
 async function init() {
   const [loc, ses] = await Promise.all([
-    chrome.storage.local.get(['queue', 'tabs', 'paused']),
+    chrome.storage.local.get(['queue', 'tabs']),
     chrome.storage.session.get(['boot']),
   ]);
   queue = loc.queue || [];
-  paused = !!loc.paused;
+  chrome.storage.local.remove('paused').catch(() => {}); // pause feature was removed; drop stale value
   const saved = loc.tabs || {};
   chrome.idle.setDetectionInterval(CONFIG.idleSeconds);
   try { idleState = await chrome.idle.queryState(CONFIG.idleSeconds); } catch {}
@@ -233,10 +300,39 @@ async function init() {
   }
   change();
   chrome.alarms.create('tick', { periodInMinutes: 0.5 });
+  incognitoAllowed = await isIncognitoAllowed();
+  connect();
   updateBadge();
   scheduleFlush(1000);
+  lastHeartbeat = Date.now();
+  if (ses.boot) logStart('worker_restart');
+  else setTimeout(() => logStart('enabled'), 4000); // onStartup/onInstalled normally claim this first
 }
 const ready = init();
+
+// ---------- always-on markers: let the log explain any silence ----------
+async function isIncognitoAllowed() {
+  try { return await chrome.extension.isAllowedIncognitoAccess(); } catch { return null; }
+}
+function logStart(cause) {
+  if (startLogged && cause !== 'worker_restart') return;
+  startLogged = true;
+  emit({ type: 'logger_start', cause, version: chrome.runtime.getManifest().version, incognito_allowed: incognitoAllowed });
+}
+async function heartbeat() {
+  incognitoAllowed = await isIncognitoAllowed();
+  lastHeartbeat = Date.now();
+  emit({
+    type: 'heartbeat', tracked_tabs: Object.keys(tabs).length, queue: queue.length,
+    idle: idleState, focused: focusedWindowId !== NO_WINDOW, host_ok: hostStatus.ok,
+    incognito_allowed: incognitoAllowed,
+  });
+}
+chrome.runtime.onStartup.addListener(async () => { await ready; logStart('browser_start'); });
+chrome.runtime.onInstalled.addListener(async (d) => {
+  await ready;
+  logStart(d.reason === 'install' ? 'install' : d.reason === 'update' ? 'extension_reload' : d.reason);
+});
 
 // ---------- listeners (must be registered synchronously) ----------
 chrome.webNavigation.onCommitted.addListener((d) => serial(() => onNavigate(d, false)));
@@ -271,7 +367,8 @@ chrome.alarms.onAlarm.addListener(async (a) => {
   if (a.name !== 'tick') return;
   await ready;
   change();
-  flush();
+  if (Date.now() - lastHeartbeat >= CONFIG.heartbeatSeconds * 1000 - 2000) await heartbeat(); // -2s: alarm jitter
+  flush(); // also reconnects the native port if it dropped
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -308,15 +405,10 @@ async function handleMessage(msg, sender) {
       if (s) { s.pending[msg.name] = msg.ev; persistSoon(); }
       break;
     case 'status': {
-      let host = { ok: false };
-      try { host = await chrome.runtime.sendNativeMessage(HOST, { cmd: 'ping' }); } catch (e) { host = { ok: false, error: String((e && e.message) || e) }; }
-      return { paused, queue: queue.length, tracked_tabs: Object.keys(tabs).length, host, lastFlush: hostStatus.lastFlush };
+      const host = await ping();
+      incognitoAllowed = await isIncognitoAllowed();
+      return { queue: queue.length, tracked_tabs: Object.keys(tabs).length, host, lastFlush: hostStatus.lastFlush, incognito_allowed: incognitoAllowed };
     }
-    case 'toggle':
-      paused = !paused;
-      persistSoon();
-      updateBadge();
-      return { paused };
     case 'flush':
       await flush();
       break;

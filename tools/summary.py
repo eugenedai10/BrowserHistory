@@ -36,6 +36,35 @@ def load(day):
     return out
 
 
+GAP_SECONDS = int(os.environ.get("GAP_SECONDS", "60"))  # silence longer than this counts as a gap (heartbeat is every 30s)
+
+
+def parse_ts(ts):
+    try:
+        return datetime.datetime.fromisoformat(ts)
+    except (TypeError, ValueError):
+        return None
+
+
+def report_gaps(events):
+    pts = sorted(((parse_ts(e.get("ts")), e.get("type")) for e in events if parse_ts(e.get("ts"))), key=lambda x: x[0])
+    if len(pts) < 2:
+        return
+    span = (pts[-1][0] - pts[0][0]).total_seconds()
+    gaps = []
+    for (t1, k1), (t2, k2) in zip(pts, pts[1:]):
+        d = (t2 - t1).total_seconds()
+        if d > GAP_SECONDS:
+            kind = "browser closed" if k1 == "host_stop" else "UNEXPECTED (no host_stop: crash, sleep, or extension stopped)"
+            gaps.append((t1, t2, d, kind))
+    lost = sum(g[2] for g in gaps)
+    print(f"\nLogging coverage: {fmt(span - lost)} of {fmt(span)} between first and last event")
+    if not gaps:
+        print(f"  no gaps over {fmt(GAP_SECONDS)}")
+    for t1, t2, d, kind in gaps:
+        print(f"  {t1:%H:%M:%S} -> {t2:%H:%M:%S}  {fmt(d):>7}  {kind}")
+
+
 def summarize(day):
     events = load(day)
     print(f"\n=== {day}: {len(events)} events ===")
@@ -72,7 +101,8 @@ def summarize(day):
         elif t == "discord_post":
             posts[(e.get("guild_name") or e.get("guild_id"), e.get("channel_name") or e.get("channel_id"))] += 1
 
-    print(f"visits: {visits}   link clicks: {clicks}   searches: {len(searches)}")
+    report_gaps(events)
+    print(f"\nvisits: {visits}   link clicks: {clicks}   searches: {len(searches)}")
     print("\nTop sites by active time:")
     for host, a in dom_active.most_common(10):
         print(f"  {fmt(a):>8} active / {fmt(dom_total[host]):>8} open   {host}")

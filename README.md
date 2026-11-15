@@ -23,6 +23,9 @@ Uninstall: `./native-host/uninstall.sh` and remove the extension. Logs stay in `
 | `yt_start` `yt_pause` `yt_resume` `yt_seek` `yt_end` | video_id, kind (video/short), title, channel, length_s, position_s (seek: from_s/to_s) |
 | `yt_session` | watched_s, max_position_s, pct_watched, finished, pauses, seeks, loops, ads, avg_speed, quality, captions, liked, subscribed, source (home/sidebar/search/autoplay/shorts_swipe/...), partial |
 | `discord_channel` | guild/channel ids + names, dm, enter, leave, dur_active_s, messages_seen (content is NOT logged) |
+| `host_start` `host_stop` | written by the native host when Chrome connects/disconnects (pid, reason): marks browser open/close |
+| `logger_start` | extension worker started (cause: browser_start / extension_reload / worker_restart / install / enabled) |
+| `heartbeat` | every 30s (`heartbeatSeconds` in config.js): tracked_tabs, queue, idle, focused, host_ok, incognito_allowed |
 | `discord_post` | channel info, length, text (your own posts only; `discord.logPostText` in `config.js`), confirmed |
 
 Every event has `ts` (local time with offset), `type`, and, when it came from a tab, `tab` and `incognito`.
@@ -32,7 +35,18 @@ Every event has `ts` (local time with offset), `type`, and, when it came from a 
 
 ## Config
 `extension/config.js`: `blocklist` (hostnames never logged), `stripQuery`, idle threshold, flush cadence,
-`discord.logPostText`. Reload the extension after editing. The toolbar popup has a pause switch.
+`discord.logPostText`. Reload the extension after editing.
+
+There is deliberately no pause switch: logging is always on.
+
+## Always on
+The extension keeps one persistent native-messaging port to the host, which also keeps the MV3 service
+worker from sleeping. If the port drops it reconnects with backoff; events stay queued until the host
+acknowledges them. The icon shows a red `!` while the host is unreachable.
+
+It cannot log while Chrome is closed, and you can still disable it at `chrome://extensions`. Both show up as
+gaps: `tools/summary.py` lists silences over 1 min (`GAP_SECONDS` env var to change) as **browser closed** (a `host_stop` precedes it) or
+**UNEXPECTED** (no `host_stop`: crash, power loss, or extension stopped).
 
 ## Summary
 ```bash

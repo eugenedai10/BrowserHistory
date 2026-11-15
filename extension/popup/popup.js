@@ -8,16 +8,11 @@ async function refresh() {
   $('today').textContent = ok ? s.host.events_today : '–';
   $('queue').textContent = s.queue;
   $('tabs').textContent = s.tracked_tabs;
-  $('state').textContent = s.paused ? 'paused' : 'on';
-  $('state').className = s.paused ? 'bad' : 'ok';
+  const inc = s.incognito_allowed;
+  $('incog').textContent = inc ? 'logged' : inc === false ? 'NOT logged (enable in extension details)' : '–';
+  $('incog').className = inc ? 'ok' : 'bad';
   $('file').textContent = ok ? s.host.file : '';
   $('err').textContent = ok ? '' : (s.host && s.host.error) || 'Run native-host/install.sh, then reload the extension.';
-  $('toggle').textContent = s.paused ? 'Resume logging' : 'Pause logging';
 }
-
-$('toggle').addEventListener('click', async () => {
-  await chrome.runtime.sendMessage({ k: 'toggle' });
-  refresh();
-});
 
 refresh();

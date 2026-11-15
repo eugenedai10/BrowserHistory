@@ -9,6 +9,8 @@ const CONFIG = {
   // Native-host flush cadence
   flushIntervalMs: 5000,
   flushBatchSize: 25,
+  // Liveness marker cadence (chrome.alarms cannot fire faster than every 30s)
+  heartbeatSeconds: 30,
   discord: {
     // Log the text of messages YOU post (never other people's messages)
     logPostText: true,

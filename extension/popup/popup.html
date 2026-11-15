@@ -11,7 +11,6 @@
   .row { display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px solid var(--line); }
   .row span:first-child { color:var(--muted); }
   .ok { color:var(--ok); } .bad { color:var(--bad); }
-  button { margin-top:12px; width:100%; padding:7px; font:inherit; cursor:pointer; }
   #err { color:var(--bad); margin-top:8px; word-break:break-word; }
   code { font-size:11px; word-break:break-all; }
 </style>
@@ -22,10 +21,9 @@
   <div class="row"><span>Events today</span><span id="today">–</span></div>
   <div class="row"><span>Queued</span><span id="queue">–</span></div>
   <div class="row"><span>Tabs tracked</span><span id="tabs">–</span></div>
-  <div class="row"><span>Logging</span><span id="state">–</span></div>
+  <div class="row"><span>Incognito</span><span id="incog">–</span></div>
   <div style="margin-top:8px"><code id="file"></code></div>
   <div id="err"></div>
-  <button id="toggle">Pause logging</button>
   <script src="popup.js"></script>
 </body>
 </html>
