@@ -31,7 +31,9 @@ function renderSection(kind, sessions) {
   sec.querySelector('.n').textContent = `(${rows.length})`;
   const list = sec.querySelector('.list');
   const btn = sec.querySelector('.toggle');
+  const top = list.scrollTop; // refreshed every second: keep the scroll position
   renderList(list, rows);
+  list.scrollTop = top;
   const label = () => (list.hidden ? `Show all (${rows.length})` : 'Hide');
   btn.disabled = !rows.length;
   btn.textContent = label();
@@ -39,14 +41,18 @@ function renderSection(kind, sessions) {
 }
 
 async function refresh() {
-  const r = await chrome.runtime.sendMessage({ k: 'yt_today' });
-  if (!r || !r.ok) {
-    $('err').textContent = (r && r.error) || 'Run native-host/install.sh, then reload the extension.';
-    return;
-  }
-  const sessions = r.sessions || [];
-  renderSection('video', sessions);
-  renderSection('short', sessions);
+  try {
+    const r = await chrome.runtime.sendMessage({ k: 'yt_today' });
+    if (!r || !r.ok) {
+      $('err').textContent = (r && r.error) || 'Run native-host/install.sh, then reload the extension.';
+    } else {
+      $('err').textContent = '';
+      const sessions = r.sessions || [];
+      renderSection('video', sessions);
+      renderSection('short', sessions);
+    }
+  } catch {}
+  setTimeout(refresh, 1000); // live while open (the popup page dies when it closes)
 }
 
 refresh();

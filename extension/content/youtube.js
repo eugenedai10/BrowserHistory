@@ -88,6 +88,7 @@
   let cur = null;
   let prev = null; // summary of previous session, for autoplay / shorts-swipe inference
   let lastStateSent = 0;
+  let lastLiveSent = 0;
 
   // oEmbed gives title + channel by video id, independent of YouTube's (changing) page layout.
   const oembedCache = new Map(); // id -> {title, author} | null (failed)
@@ -153,6 +154,47 @@
     cur.buf = [];
   }
 
+  // ---- watch-time ticks for the reminder (the worker keeps today's totals) ----
+  const IS_MUSIC = location.hostname === 'music.youtube.com';
+  const tickMs = { video: 0, short: 0 };
+  let lastTickSent = Date.now();
+  function flushTicks(force) {
+    const now = Date.now();
+    if (!force && now - lastTickSent < 5000) return;
+    lastTickSent = now;
+    for (const kind of ['video', 'short']) {
+      if (tickMs[kind] <= 0) continue;
+      CH.send({ k: 'yt_tick', kind, ms: Math.round(tickMs[kind]), music: IS_MUSIC });
+      tickMs[kind] = 0;
+    }
+  }
+
+  // ---- reminder popup (Shadow DOM so YouTube's CSS can't touch it) ----
+  function showReminder(message) {
+    const old = document.getElementById('__ch_yt_reminder');
+    if (old) old.remove();
+    const host = document.createElement('div');
+    host.id = '__ch_yt_reminder';
+    host.style.cssText = 'all:initial;position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:2147483647;';
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = `
+      <style>
+        .box { font: 15px/1.4 -apple-system, system-ui, sans-serif; color: #fff; background: #d63031;
+               padding: 14px 18px; border-radius: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.4);
+               display: flex; align-items: center; gap: 16px; max-width: 90vw; }
+        b { display: block; font-size: 13px; opacity: .85; }
+        button { font: inherit; font-weight: 600; cursor: pointer; border: 0; border-radius: 8px;
+                 padding: 6px 14px; background: #fff; color: #d63031; }
+      </style>
+      <div class="box" role="alert"><div><b>YouTube reminder</b><span class="msg"></span></div><button>Dismiss</button></div>`;
+    root.querySelector('.msg').textContent = message;
+    root.querySelector('button').addEventListener('click', () => host.remove());
+    (document.fullscreenElement || document.documentElement).appendChild(host);
+  }
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg && msg.k === 'yt_reminder') showReminder(msg.message || 'Time to take a break.');
+  });
+
   function newSession(loc) {
     let source;
     if (lastClick && lastClick.id === loc.id && Date.now() - lastClick.at < 15000) source = lastClick.source;
@@ -209,10 +251,12 @@
     if (!cur) return;
     const v = getVideo();
     if (reason === 'pagehide') { sample(true); refreshFlags(v); } // after SPA navigation the DOM already shows the next video
+    flushTicks(true);
     if (reason === 'pagehide' || !cur.title) readMeta();
     if (cur.started) {
       const ev = snapshot(v);
       ev.reason = reason;
+      CH.send({ k: 'yt_live', ev: { ...ev } }); // final totals for the popup until the host log has the session
       if (!cur.metaReady) releaseBuffer();
       CH.send({ k: 'event', ev, clears: 'yt' });
     } else if (Date.now() - cur.created > 3000) {
@@ -268,6 +312,7 @@
     if (cur.playing && dt > 0 && dt < 5000) {
       cur.watchedMs += dt;
       cur.speedMs += dt * (v.playbackRate || 1);
+      tickMs[cur.kind] += dt;
     }
     // loop detection (Shorts loop instead of ending)
     const len = isFinite(v.duration) ? v.duration : cur.length;
@@ -299,6 +344,12 @@
       }
     }
     if (cur.started && (!cur.flagsAt || now - cur.flagsAt > 5000)) { cur.flagsAt = now; refreshFlags(v); }
+    // live snapshot for the toolbar popup (in-memory in the worker, not logged); only when watch time moved
+    if (cur.started && cur.watchedMs !== cur.liveSentMs && now - lastLiveSent >= 1000) {
+      lastLiveSent = now;
+      cur.liveSentMs = cur.watchedMs;
+      CH.send({ k: 'yt_live', ev: snapshot(v) });
+    }
     if (cur.started && now - lastStateSent > 20000) {
       lastStateSent = now;
       CH.send({ k: 'state', name: 'yt', ev: snapshot(v) });
@@ -346,7 +397,7 @@
     if (loc.id) newSession(loc);
   }
 
-  setInterval(() => { checkUrl(); sample(false); }, SAMPLE_MS);
+  setInterval(() => { checkUrl(); sample(false); flushTicks(false); }, SAMPLE_MS);
   document.addEventListener('yt-navigate-finish', checkUrl, true);
   window.addEventListener('pagehide', () => endSession('pagehide'));
   checkUrl();

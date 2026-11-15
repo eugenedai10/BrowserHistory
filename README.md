@@ -22,6 +22,7 @@ Uninstall: `./native-host/uninstall.sh` and remove the extension. Logs stay in `
 | `search` | engine, query, url |
 | `yt_start` `yt_pause` `yt_resume` `yt_seek` `yt_end` | video_id, kind (video/short), title, channel, length_s, position_s (seek: from_s/to_s) |
 | `yt_session` | watched_s, max_position_s, pct_watched, finished, pauses, seeks, loops, ads, avg_speed, quality, captions, liked, subscribed, source (home/sidebar/search/autoplay/shorts_swipe/...), partial |
+| `yt_reminder` | kind (video/short), total_s (today's watch time of that kind), n (which reminder of the day) |
 | `discord_channel` | guild/channel ids + names, dm, enter, leave, dur_active_s, messages_seen (content is NOT logged) |
 | `host_start` `host_stop` | written by the native host when the extension connects/disconnects. `host_stop.cause` is `browser_exit` (Chrome itself went away within 5s: quit or crash) or `extension_stopped` (Chrome still running: extension reloaded, disabled, removed, or its worker restarted) |
 | `logger_start` | extension worker started (cause: browser_start / extension_reload / worker_restart / install / enabled) |
@@ -75,7 +76,13 @@ for the tests.
 
 ## Config
 `extension/config.js`: `blocklist` (hostnames never logged), `stripQuery`, idle threshold, flush cadence,
-`discord.logPostText`. Reload the extension after editing.
+`discord.logPostText`, `ytReminder` (per kind `firstMinutes` / `everyMinutes`). Reload the extension after editing.
+
+**YouTube reminder:** once today's watch time of long videos reaches 20 min you get a system notification and a red
+banner on the YouTube tab (Dismiss to close), then again every 5 min (20, 25, 30, ...). Shorts: first at 10 min,
+then every 2 min (10, 12, 14, ...). Counts are totals per kind across all
+tabs, reset at local midnight, exclude ads/pauses and `music.youtube.com`. It only reminds: it never pauses or blocks
+playback. The extension needs the `notifications` permission, so Chrome may ask you to re-approve it after reload.
 
 There is deliberately no pause switch: logging is always on.
 

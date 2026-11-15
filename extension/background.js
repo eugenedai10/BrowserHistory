@@ -23,6 +23,8 @@ let incognitoAllowed = null;
 let startLogged = false;
 let persistTimer = null;
 let chain = Promise.resolve();  // serializes navigation handling
+let ytr = null;                 // YouTube reminder counters for today: {day, video_ms, short_ms, video_n, short_n}
+let ytrTimer = null;
 
 // ---------- helpers ----------
 const pad = (n, w = 2) => String(n).padStart(w, '0');
@@ -56,6 +58,71 @@ function persistSoon() {
     persistTimer = null;
     chrome.storage.local.set({ queue, tabs }).catch(() => {});
   }, 250);
+}
+
+// ---------- YouTube reminder ----------
+// Content scripts report watch time (yt_tick); today's totals per kind live here so they span tabs and
+// navigation. Each time a total crosses a multiple of the configured interval: notification + in-page popup.
+const today = () => iso().slice(0, 10);
+function ytrSoon() {
+  if (ytrTimer) return;
+  ytrTimer = setTimeout(() => {
+    ytrTimer = null;
+    chrome.storage.local.set({ ytr }).catch(() => {});
+  }, 1000);
+}
+function fmtDur(ms) {
+  const m = Math.round(ms / 60000);
+  return m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}min` : ''}` : `${m} min`;
+}
+function ytTick(msg, tab) {
+  if (msg.music || (msg.kind !== 'video' && msg.kind !== 'short')) return;
+  const ms = Math.min(Math.max(+msg.ms || 0, 0), 60000); // a tick covers ~5s; clamp garbage
+  if (!ms) return;
+  const day = today();
+  if (!ytr || ytr.day !== day) ytr = { day, video_ms: 0, short_ms: 0, video_n: 0, short_n: 0 };
+  const k = msg.kind;
+  ytr[k + '_ms'] += ms;
+  const { firstMinutes, everyMinutes } = CONFIG.ytReminder[k];
+  const first = firstMinutes * 60000, every = everyMinutes * 60000;
+  const total = ytr[k + '_ms'];
+  const due = total < first ? 0 : 1 + Math.floor((total - first) / every); // reminders owed so far
+  if (due < ytr[k + '_n']) ytr[k + '_n'] = due; // schedule changed in config.js: resync silently, next reminder is on the new schedule
+  if (due > ytr[k + '_n']) {
+    ytr[k + '_n'] = due; // once, even if several thresholds were crossed
+    remind(k, ytr[k + '_ms'], due, tab);
+  }
+  ytrSoon();
+}
+function remind(kind, totalMs, n, tab) {
+  const what = kind === 'video' ? 'YouTube videos' : 'YouTube Shorts';
+  const message = `You've watched ${fmtDur(totalMs)} of ${what} today.`;
+  chrome.notifications.create({
+    type: 'basic', iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+    title: 'YouTube reminder', message, priority: 1,
+  }).catch(() => {});
+  if (tab) chrome.tabs.sendMessage(tab.id, { k: 'yt_reminder', kind, message }).catch(() => {});
+  emit({ type: 'yt_reminder', kind, total_s: Math.round(totalMs / 1000), n }, tab);
+}
+
+// Live YouTube sessions for the toolbar popup. The host log only gets a session when it ends, so the video you
+// are watching now would be missing. Snapshots arrive ~1/s from content scripts; kept in memory, merged into
+// yt_today, and dropped 15s after the last update (by then the host has the final record).
+const liveYt = {};              // sid -> {ev, at}
+const YT_FIELDS = ['sid', 'kind', 'title', 'channel', 'watched_s', 'length_s', 'start', 'finished', 'loops'];
+function mergeLive(rows) {
+  const cutoff = Date.now() - 15000;
+  const bySid = new Map(rows.map((r) => [r.sid, r]));
+  for (const [sid, l] of Object.entries(liveYt)) {
+    if (l.at < cutoff) { delete liveYt[sid]; continue; }
+    const h = bySid.get(sid);
+    if (h && !h.partial) continue; // the host already has the final record
+    const row = {};
+    for (const k of YT_FIELDS) row[k] = l.ev[k];
+    row.partial = true;
+    bySid.set(sid, row);
+  }
+  return [...bySid.values()].sort((a, b) => String(a.start || '').localeCompare(String(b.start || '')));
 }
 
 // ---------- event queue ----------
@@ -278,10 +345,11 @@ async function adoptOpenTabs() {
 // ---------- init (runs on every worker start) ----------
 async function init() {
   const [loc, ses] = await Promise.all([
-    chrome.storage.local.get(['queue', 'tabs']),
+    chrome.storage.local.get(['queue', 'tabs', 'ytr']),
     chrome.storage.session.get(['boot']),
   ]);
   queue = loc.queue || [];
+  ytr = loc.ytr || null;
   chrome.storage.local.remove('paused').catch(() => {}); // pause feature was removed; drop stale value
   const saved = loc.tabs || {};
   chrome.idle.setDetectionInterval(CONFIG.idleSeconds);
@@ -411,8 +479,16 @@ async function handleMessage(msg, sender) {
       incognitoAllowed = await isIncognitoAllowed();
       return { queue: queue.length, tracked_tabs: Object.keys(tabs).length, host, lastFlush: hostStatus.lastFlush, incognito_allowed: incognitoAllowed };
     }
-    case 'yt_today':
-      return await hostRequest('yt_today');
+    case 'yt_tick':
+      ytTick(msg, tab);
+      break;
+    case 'yt_live':
+      if (msg.ev && msg.ev.sid) liveYt[msg.ev.sid] = { ev: msg.ev, at: Date.now() };
+      break;
+    case 'yt_today': {
+      const r = await hostRequest('yt_today');
+      return r && r.ok ? { ...r, sessions: mergeLive(r.sessions || []) } : r;
+    }
     case 'flush':
       await flush();
       break;
