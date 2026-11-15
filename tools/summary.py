@@ -308,6 +308,34 @@ def report_logger_state(events, day):
         print(f"  now: {'enabled' if en_last else 'DISABLED'} for {fmt((now - t_last).total_seconds())}")
 
 
+def report_incognito(events, day):
+    """Periods when the extension was NOT allowed in incognito (so private windows were not logged).
+    The flag is sampled by the extension in every heartbeat (30s) and logger_start, so edges are +/-30s."""
+    samples = sorted(((t, bool(e.get("incognito_allowed"))) for t, k, e in
+                      ((parse_ts(e.get("ts")), e.get("type"), e) for e in events)
+                      if t and k in ("heartbeat", "logger_start") and e.get("incognito_allowed") is not None),
+                     key=lambda x: x[0])
+    periods, start = [], None
+    for t, allowed in samples:
+        if not allowed and start is None:
+            start = t
+        elif allowed and start is not None:
+            periods.append((start, t, False))
+            start = None
+    if start is not None:  # still disallowed at the last sample
+        today = day == datetime.date.today().isoformat()
+        periods.append((start, datetime.datetime.now().astimezone() if today else samples[-1][0], True))
+    if not periods:
+        return
+    total = sum((e - s).total_seconds() for s, e, _ in periods)
+    print(f"\nIncognito logging DISALLOWED: {len(periods)} period(s), {fmt(total)} in total (private windows not logged):")
+    for s, e, ongoing in periods:
+        end = "now" if ongoing and day == datetime.date.today().isoformat() else f"{e:%H:%M:%S}"
+        tail = "  (still disallowed)" if ongoing else ""
+        began = "  (already disallowed when this log began)" if s == samples[0][0] and not samples[0][1] else ""
+        print(f"  {s:%H:%M:%S} -> {end}  {fmt((e - s).total_seconds()):>7}{began}{tail}")
+
+
 def summarize(day):
     events = load(day)
     print(f"\n=== {day}: {len(events)} events ===")
@@ -346,6 +374,7 @@ def summarize(day):
 
     report_gaps(events, day)
     report_logger_state(events, day)
+    report_incognito(events, day)
     print(f"\nvisits: {visits}   link clicks: {clicks}   searches: {len(searches)}")
     print("\nTop sites by active time:")
     for host, a in dom_active.most_common(10):
