@@ -249,6 +249,65 @@ def report_monitor(tl, today, hi):
               "logger state unknown for that period")
 
 
+ENABLE_LABEL = {
+    "browser_start": "browser started",
+    "extension_reload": "extension reloaded",
+    "enabled": "extension enabled",
+    "install": "extension installed",
+    "worker_restart": "extension worker restarted",
+}
+
+
+def report_logger_state(events, day):
+    """When the logger (extension + native host) was enabled and disabled, from host_start/host_stop markers.
+    The external monitor's extension_missing/present fill in when Chrome ran without the extension ever connecting."""
+    pts = sorted(((parse_ts(e.get("ts")), e.get("type"), e) for e in events if parse_ts(e.get("ts"))), key=lambda x: x[0])
+    if not pts:
+        return
+    host_pts = [(t, k, e) for t, k, e in pts if k in ("host_start", "host_stop")]
+    trans = [(t, k == "host_start", e) for t, k, e in host_pts]  # (time, enabled?, event)
+    # monitor-only transitions: skip ones a host marker already reports within 60s
+    for t, k, e in pts:
+        if k in ("extension_missing", "extension_present"):
+            enabled = k == "extension_present"
+            if not any(abs((t - ht).total_seconds()) <= 60 and (hk == "host_start") == enabled for ht, hk, _ in host_pts):
+                trans.append((t, enabled, e))
+    trans.sort(key=lambda x: x[0])
+    # collapse repeated identical states (e.g. host_start immediately followed by extension_present)
+    seq = []
+    for t, en, e in trans:
+        if not seq or seq[-1][1] != en:
+            seq.append((t, en, e))
+    if not seq:
+        return
+
+    def start_cause(t):
+        for tt, k, e in pts:
+            if k == "logger_start" and -5 <= (tt - t).total_seconds() <= 30:
+                return e.get("cause")
+        return None
+
+    today = day == datetime.date.today().isoformat()
+    now = datetime.datetime.now().astimezone()
+    print("\nLogger (extension) enabled / disabled:")
+    if not seq[0][1]:
+        print(f"  (enabled before this log started)")
+    for i, (t, en, e) in enumerate(seq):
+        prev_t = seq[i - 1][0] if i else None
+        dur = f"  (was {'off' if en else 'on'} {fmt((t - prev_t).total_seconds())})" if prev_t else ""
+        if en:
+            why = ENABLE_LABEL.get(start_cause(t) or e.get("cause"), "")
+            print(f"  {t:%H:%M:%S}  enabled   {why or '(reason not recorded)'}{dur}")
+        else:
+            nxt = next((seq[j] for j in range(i + 1, len(seq)) if seq[j][1]), None)
+            nc = start_cause(nxt[0]) if nxt else None
+            why = stop_label(e, nc) if e.get("type") == "host_stop" else "Chrome running, logger extension not connected"
+            print(f"  {t:%H:%M:%S}  DISABLED  {why}{dur}")
+    t_last, en_last, _e = seq[-1]
+    if today:
+        print(f"  now: {'enabled' if en_last else 'DISABLED'} for {fmt((now - t_last).total_seconds())}")
+
+
 def summarize(day):
     events = load(day)
     print(f"\n=== {day}: {len(events)} events ===")
@@ -286,6 +345,7 @@ def summarize(day):
             posts[(e.get("guild_name") or e.get("guild_id"), e.get("channel_name") or e.get("channel_id"))] += 1
 
     report_gaps(events, day)
+    report_logger_state(events, day)
     print(f"\nvisits: {visits}   link clicks: {clicks}   searches: {len(searches)}")
     print("\nTop sites by active time:")
     for host, a in dom_active.most_common(10):
@@ -311,10 +371,21 @@ def summarize(day):
             print("  top channels:")
             for c, sec in chan.most_common(5):
                 print(f"    {fmt(sec):>8}  {c}")
-            print("  longest watched:")
-            for e in sorted(rows, key=lambda x: -x.get("watched_s", 0))[:5]:
-                length = fmt(e.get("length_s") or 0)
-                print(f"    {fmt(e.get('watched_s', 0)):>7} / {length:>7}  {e.get('title')!r} [{e.get('channel') or '?'}] ({e.get('source')})")
+            print(f"  all watched, in order (start -> stop):")
+            for e in sorted(rows, key=lambda x: (parse_ts(x.get("start") or x.get("ts")) or datetime.datetime.min.astimezone())):
+                st = parse_ts(e.get("start") or e.get("ts"))
+                en = parse_ts(e.get("end") or e.get("ts"))
+                span = f"{st:%H:%M:%S} -> {en:%H:%M:%S}" if st and en else "?"
+                length = fmt(e.get("length_s") or 0) if e.get("length_s") else "?"
+                notes = [e.get("source") or "?"]
+                if e.get("finished"):
+                    notes.append("finished")
+                if e.get("loops"):
+                    notes.append(f"{e['loops']} loop{'s' if e['loops'] != 1 else ''}")
+                if e.get("partial"):
+                    notes.append("partial: tab closed/crashed")
+                title = (e.get("title") or "(no title)").replace("\n", " ")
+                print(f"    {span}  {fmt(e.get('watched_s', 0)):>7} of {length:>7}  {title!r} [{e.get('channel') or '?'}]  ({', '.join(notes)})")
 
     if discord:
         print("\nDiscord channels read:")
