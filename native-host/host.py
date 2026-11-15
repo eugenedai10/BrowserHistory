@@ -16,6 +16,7 @@ import re
 import signal
 import struct
 import sys
+import time
 
 LOG_DIR = os.environ.get("CHROME_HISTORY_DIR") or os.path.expanduser("~/chrome-history")
 DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
@@ -83,10 +84,10 @@ def now_iso():
     return datetime.datetime.now().astimezone().isoformat(timespec="milliseconds")
 
 
-def write_marker(kind, **extra):
+def write_marker(kind, ts=None, **extra):
     """Host-written marker. Because the host (not the extension) writes it, it shows up even when
     the extension has been disabled/removed, which is what lets summary.py explain gaps."""
-    ev = {"ts": now_iso(), "type": kind, "pid": os.getpid()}
+    ev = {"ts": ts or now_iso(), "type": kind, "pid": os.getpid()}
     ev.update(extra)
     try:
         ensure_dir()
@@ -101,16 +102,32 @@ def handle_ping():
     return {"ok": True, "dir": LOG_DIR, "file": path, "events_today": count_lines(path)}
 
 
+def classify_stop(parent_pid, wait=5.0):
+    """Why did the connection close? Chrome launches the host as its child. If that parent process
+    goes away shortly after our stdin closes, the browser exited (quit or crash); if it is still alive,
+    only the extension went away (reloaded, disabled, removed, or its worker restarted)."""
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        if os.getppid() != parent_pid:  # reparented to launchd => parent died
+            return "browser_exit"
+        time.sleep(0.1)
+    return "extension_stopped"
+
+
 def main():
+    parent_pid = os.getppid()
     ensure_dir()
-    write_marker("host_start")
+    write_marker("host_start", ppid=parent_pid)
     reason = "eof"
     try:
         loop()
+    except SystemExit:
+        reason = "terminated"
     except Exception as e:  # never die silently: record why
         reason = "error: %s" % e
-    finally:
-        write_marker("host_stop", reason=reason)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)  # finish classifying and write the marker
+    stop_ts = now_iso()  # time of the disconnect, not of the end of the classification wait
+    write_marker("host_stop", ts=stop_ts, reason=reason, cause=classify_stop(parent_pid), ppid=parent_pid)
 
 
 def loop():
