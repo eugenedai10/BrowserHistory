@@ -468,16 +468,14 @@ def summarize(day):
             if kind == "short":
                 line += f", {sum(e.get('loops', 0) for e in rows)} loops"
             print(line)
-            src = collections.Counter(e.get("source") or "?" for e in rows)
-            print("  found via: " + ", ".join(f"{k} {n}" for k, n in src.most_common()))
             chan = collections.Counter()
             for e in rows:
                 chan[e.get("channel") or "?"] += e.get("watched_s", 0)
             print("  top channels:")
             for c, sec in chan.most_common(5):
                 print(f"    {fmt(sec):>8}  {c}")
-            print(f"  all watched, in order (start -> stop):")
-            for e in sorted(rows, key=lambda x: (parse_ts(x.get("start") or x.get("ts")) or datetime.datetime.min.astimezone())):
+            print("  all watched, by watch time (start -> stop):")
+            for e in sorted(rows, key=lambda x: (-x.get("watched_s", 0), parse_ts(x.get("start") or x.get("ts")) or datetime.datetime.min.astimezone())):
                 st = parse_ts(e.get("start") or e.get("ts"))
                 en = parse_ts(e.get("end") or e.get("ts"))
                 span = f"{st:%H:%M:%S} -> {en:%H:%M:%S}" if st and en else "?"
@@ -545,7 +543,6 @@ def _yt_kind(rows):
     chan = collections.Counter()
     for e in rows:
         chan[e.get("channel") or "?"] += e.get("watched_s", 0)
-    src = collections.Counter(e.get("source") or "?" for e in rows)
     far = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
     sessions = []
     for e in sorted(rows, key=lambda x: parse_ts(x.get("start") or x.get("ts")) or far):
@@ -559,7 +556,6 @@ def _yt_kind(rows):
     return {
         "count": len(rows), "watched_s": round(sum(e.get("watched_s", 0) for e in rows), 1),
         "finished": sum(1 for e in rows if e.get("finished")), "loops": sum(e.get("loops", 0) for e in rows),
-        "sources": [{"name": k, "n": n} for k, n in src.most_common()],
         "channels": [{"name": k, "s": round(v, 1)} for k, v in chan.most_common(8)],
         "sessions": sessions,
     }

@@ -134,7 +134,7 @@ python3 tools/test_summary.py       # tests for the data layer and the server
 ```
 Pick a day with the arrows (or the ←/→ keys), the date field, **Today** / **Latest**, or by clicking a bar in the
 "All days" chart (switch it between active time, YouTube and visits). Each day shows totals, active time by hour, top
-sites, applications (time each app was in front, plus a timeline of which app was in front when), YouTube (videos and Shorts: found-via, top channels, every session in order), Discord, searches, and logging
+sites, applications (time each app was in front, plus a timeline of which app was in front when), YouTube (videos, Shorts and embeds: a timeline of when each was watched, top channels, every session by watch time), Discord, searches, and logging
 health (coverage bar, gaps with causes, log integrity). Every chart has a **Table** view. The URL hash (`#2026-11-15`)
 deep-links to a day, and today's page refreshes itself every minute.
 
