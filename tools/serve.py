@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """Local web UI for the browsing summary: browse ~/chrome-history day by day.
 
-Usage: serve.py [--port 9898] [--open]
+Usage: serve.py [--port 9898] [--open] [--lan [--allow-host NAME ...]]
 
-Read-only and bound to 127.0.0.1. The logs hold full URLs and your own Discord posts, so requests whose Host
-header is not localhost are refused (DNS-rebinding guard) and no CORS headers are sent.
+Read-only and bound to 127.0.0.1 by default. The logs hold full URLs and your own Discord posts, so requests whose
+Host header is not an expected name are refused (DNS-rebinding guard) and no CORS headers are sent.
+
+--lan binds 0.0.0.0 so other machines on the local network can reach it, with no authentication: anyone on the
+network can read the logs. Traffic is plain HTTP, so only use this on a network you trust.
 """
 import argparse
+import ipaddress
 import json
 import os
 import re
+import socket
 import sys
 import threading
 import webbrowser
@@ -41,6 +46,27 @@ def integrity(refresh=False):
         return _integrity["value"]
 
 
+def lan_ip():
+    """Best-guess LAN address of this machine (UDP connect sends no packets)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("10.255.255.255", 1))
+            return s.getsockname()[0]
+    except OSError:
+        return None
+
+
+def host_names():
+    """Names (other than IP literals) this machine may legitimately be reached by."""
+    names = {"localhost"}
+    h = socket.gethostname().lower().rstrip(".")
+    if h:
+        names.add(h)
+        short = h.split(".")[0]
+        names.update({short, short + ".local"})
+    return names
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "SummaryUI"
 
@@ -63,8 +89,19 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(obj, ensure_ascii=False), "application/json; charset=utf-8")
 
     def _host_ok(self):
+        host = (self.headers.get("Host") or "").strip().lower()
         port = self.server.server_address[1]
-        return (self.headers.get("Host") or "") in ("127.0.0.1:%d" % port, "localhost:%d" % port)
+        if not self.server.lan:
+            return host in ("127.0.0.1:%d" % port, "localhost:%d" % port)
+        name, sep, p = host.rpartition(":")
+        if not sep or p != str(port):
+            return False
+        name = name.strip("[]").rstrip(".")
+        try:
+            ipaddress.ip_address(name)  # IP literals can't be DNS-rebound
+            return True
+        except ValueError:
+            return name in self.server.allowed_names
 
     def do_HEAD(self):
         self.do_GET()
@@ -98,24 +135,38 @@ class Handler(BaseHTTPRequestHandler):
     do_PUT = do_DELETE = do_PATCH = do_POST
 
 
-def make_server(port=9898):
-    return ThreadingHTTPServer(("127.0.0.1", port), Handler)
+def make_server(port=9898, lan=False, allow_hosts=()):
+    srv = ThreadingHTTPServer(("0.0.0.0" if lan else "127.0.0.1", port), Handler)
+    srv.lan = lan
+    srv.allowed_names = host_names() | {h.lower().rstrip(".") for h in allow_hosts}
+    return srv
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--port", type=int, default=9898)
     ap.add_argument("--open", action="store_true", help="open the page in the default browser")
+    ap.add_argument("--lan", action="store_true", help="listen on all interfaces (no authentication)")
+    ap.add_argument("--allow-host", action="append", default=[], metavar="NAME",
+                    help="extra hostname clients may use with --lan (repeatable)")
     args = ap.parse_args()
     try:
-        srv = make_server(args.port)
+        srv = make_server(args.port, lan=args.lan, allow_hosts=args.allow_host)
     except OSError as e:
-        sys.exit("cannot listen on 127.0.0.1:%d (%s); try --port" % (args.port, e))
+        sys.exit("cannot listen on port %d (%s); try --port" % (args.port, e))
     port = srv.server_address[1]
-    url = "http://127.0.0.1:%d/" % port
-    print("Summary UI: %s   (logs: %s, Ctrl-C to stop)" % (url, summary.LOG_DIR))
+    local_url = "http://127.0.0.1:%d/" % port
+    if args.lan:
+        ip = lan_ip()
+        print("Summary UI (LAN, no auth, logs: %s, Ctrl-C to stop)" % summary.LOG_DIR)
+        print("  this machine: %s" % local_url)
+        if ip:
+            print("  network:      http://%s:%d/" % (ip, port))
+        print("  also via:     %s" % ", ".join("%s:%d" % (n, port) for n in sorted(srv.allowed_names)))
+    else:
+        print("Summary UI: %s   (logs: %s, Ctrl-C to stop)" % (local_url, summary.LOG_DIR))
     if args.open:
-        threading.Timer(0.3, webbrowser.open, args=(url,)).start()
+        threading.Timer(0.3, webbrowser.open, args=(local_url,)).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
