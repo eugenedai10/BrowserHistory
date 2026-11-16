@@ -10,6 +10,7 @@
     --page: #f9f9f7;  --surface: #fcfcfb;  --ink: #0b0b0b;  --ink2: #52514e;  --muted: #898781;
     --grid: #e1e0d9;  --axis: #c3c2b7;  --border: rgba(11,11,11,.10);  --wash: rgba(11,11,11,.05);
     --s1: #2a78d6;  --s2: #eb6834;  --s3: #1baf7a;  --track: #cde2fb;
+    --c4: #eda100;  --c5: #e87ba4;  --c6: #008300;  --c-other: #898781;
     --good: #0ca30c;  --good-text: #006300;  --warning: #fab219;  --critical: #d03b3b;
     --shadow: 0 6px 24px rgba(0,0,0,.14);
   }
@@ -19,6 +20,7 @@
       --page: #0d0d0d;  --surface: #1a1a19;  --ink: #f0efec;  --ink2: #c3c2b7;  --muted: #898781;
       --grid: #2c2c2a;  --axis: #383835;  --border: rgba(255,255,255,.10);  --wash: rgba(255,255,255,.06);
       --s1: #3987e5;  --s2: #d95926;  --s3: #199e70;  --track: #184f95;
+      --c4: #c98500;  --c5: #d55181;  --c6: #008300;
       --good-text: #0ca30c;  --shadow: 0 6px 24px rgba(0,0,0,.5);
     }
   }
@@ -27,6 +29,7 @@
     --page: #0d0d0d;  --surface: #1a1a19;  --ink: #f0efec;  --ink2: #c3c2b7;  --muted: #898781;
     --grid: #2c2c2a;  --axis: #383835;  --border: rgba(255,255,255,.10);  --wash: rgba(255,255,255,.06);
     --s1: #3987e5;  --s2: #d95926;  --s3: #199e70;  --track: #184f95;
+    --c4: #c98500;  --c5: #d55181;  --c6: #008300;
     --good-text: #0ca30c;  --shadow: 0 6px 24px rgba(0,0,0,.5);
   }
 
@@ -159,6 +162,10 @@
   .covticks span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
   .covticks span:first-child { transform: none; }
   .covticks span:last-child { transform: translateX(-100%); }
+  .cov.apps { background: var(--wash); }
+  .cov.apps .seg { position: absolute; top: 0; bottom: 0; min-width: 3px; border-right: 1px solid var(--surface); cursor: default; outline: none; }
+  .cov.apps .seg:hover, .cov.apps .seg:focus-visible { filter: brightness(1.15); box-shadow: inset 0 0 0 2px var(--surface); }
+  .away-fill { background: repeating-linear-gradient(135deg, var(--axis) 0 3px, transparent 3px 6px); }
   .sev { white-space: nowrap; font-weight: 600; }
   .sev.warn { color: #8a5d00; } .sev.bad { color: var(--critical); }
   @media (prefers-color-scheme: dark) { :root:where(:not([data-theme="light"])) .sev.warn { color: var(--warning); } }
@@ -450,6 +457,39 @@ function sitesCard(d) {
     barList(rows, { fmtVal: fmtShort, empty: 'No visits logged' }));
 }
 
+// Which app was in front when: the same bar as the logging-health coverage bar, one segment per span.
+// The top 6 apps (by time) each get a fixed colour, the rest share "Other"; away is striped; blank = not seen.
+function appTimeline(a) {
+  const spans = a.spans || [];
+  if (!spans.length) return null;
+  const t0 = Date.parse(spans[0].from), t1 = Date.parse(spans[spans.length - 1].to), total = Math.max(1, t1 - t0);
+  const slots = ['var(--s1)', 'var(--s2)', 'var(--s3)', 'var(--c4)', 'var(--c5)', 'var(--c6)'];
+  const color = new Map(a.list.slice(0, slots.length).map((r, i) => [r.bundle, slots[i]]));
+  const away = (sp) => sp.app === null;
+  const cov = h('div', { class: 'cov apps', role: 'img', 'aria-label': `Application timeline, ${plural(spans.length, 'span')}` });
+  spans.forEach((sp) => {
+    const f = Date.parse(sp.from), e = Date.parse(sp.to), secs = (e - f) / 1000;
+    const c = away(sp) ? 'var(--muted)' : color.get(sp.bundle) || 'var(--c-other)';
+    const label = away(sp) ? (sp.reason === 'locked' ? 'Away (screen locked)' : 'Away (no input for 5 min)') : sp.app;
+    const seg = h('div', { class: 'seg' + (away(sp) ? ' away-fill' : ''), tabindex: 0,
+      style: `left:${((f - t0) / total) * 100}%;width:${((e - f) / total) * 100}%` + (away(sp) ? '' : `;background:${c}`),
+      'aria-label': `${hm(sp.from)} to ${hm(sp.to)}, ${fmt(secs)}: ${label}` });
+    attachTip(seg, () => tipNode(`${clock(sp.from)} → ${clock(sp.to)}`, [{ color: c, value: fmt(secs), label }]));
+    cov.append(seg);
+  });
+  const ticks = h('div', { class: 'covticks' });
+  for (let i = 0; i <= 4; i++) ticks.append(h('span', { style: `left:${i * 25}%` }, hm(new Date(t0 + (total * i) / 4).toISOString())));
+  const hasOther = spans.some((sp) => !away(sp) && !color.has(sp.bundle));
+  const hasAway = spans.some(away);
+  const legend = h('div', { class: 'legend' },
+    [...color].map(([bundle, c]) => h('span', null, h('i', { style: `background:${c}` }), a.list.find((r) => r.bundle === bundle).app)),
+    hasOther && h('span', null, h('i', { style: 'background:var(--c-other)' }), 'Other apps'),
+    hasAway && h('span', null, h('i', { class: 'away-fill', style: 'outline:1px solid var(--axis)' }), 'Away (idle / locked)'),
+    h('span', null, h('i', { style: 'background:var(--wash);outline:1px solid var(--axis)' }), 'Not seen (asleep / monitor off)'));
+  return h('div', null, h('p', { class: 'note' }, h('b', null, 'Timeline'), ` ${hm(spans[0].from)} – ${hm(spans[spans.length - 1].to)}`),
+    legend, cov, ticks);
+}
+
 function appsCard(d) {
   const a = d.apps;
   if (!a || (!a.list.length && !a.away_s)) return null;  // days before app tracking, or tracking off
@@ -461,6 +501,7 @@ function appsCard(d) {
     h('div', { class: 'card-h' }, h('div', null, h('h2', null, 'Applications'),
       h('p', { class: 'sub' }, 'Time each app was in front (app names only; no window titles)'))),
     barList(rows, { fmtVal: fmtShort, empty: 'No application time logged' }),
+    appTimeline(a),
     h('p', { class: 'note' }, h('b', null, fmtShort(a.total_s)), ' in use · ', h('b', null, fmtShort(a.away_s)),
       ' away (no input for 5 min, screen locked)'));
 }

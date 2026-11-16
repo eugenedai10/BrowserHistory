@@ -188,6 +188,15 @@ class AppTimeTests(unittest.TestCase):
         self.assertEqual(a["total_s"], 2460)
         self.assertEqual(a["list"][0]["app"], "Safari")             # most time first
 
+    def test_spans_for_the_timeline(self):
+        a = summary.app_time(self.events(), self.D)
+        got = [(s["from"][11:19], s["to"][11:19], s["app"], s["reason"]) for s in a["spans"]]
+        self.assertEqual(got, [("09:00:00", "09:10:00", "Code", None), ("09:10:00", "09:20:00", "Safari", None),
+                               ("09:20:00", "09:30:00", None, "idle"), ("09:30:00", "09:40:00", "Code", None),
+                               ("09:50:00", "10:01:00", "Safari", None)])  # sleep gap is blank; last span ends one heartbeat after the last sign of life
+        self.assertEqual(a["spans"][0]["bundle"], "com.x.Code")
+        json.dumps(a)
+
     def test_same_bundle_with_new_display_name_is_one_row(self):
         ev = [self.focus("09:00:00", "Old Name", "com.x.app"), self.focus("09:01:00", "New Name", "com.x.app"),
               {"ts": self.t("09:02:00"), "type": "monitor_heartbeat"}]
@@ -197,11 +206,13 @@ class AppTimeTests(unittest.TestCase):
 
     def test_clipped_at_midnight(self):
         ev = [self.focus("23:00:00", "Code"), {"ts": f"2026-03-06T01:00:00.000{TZ}", "type": "monitor_heartbeat"}]
-        self.assertEqual(summary.app_time(ev, self.D)["list"][0]["s"], 3600)
+        a = summary.app_time(ev, self.D)
+        self.assertEqual(a["list"][0]["s"], 3600)
+        self.assertTrue(a["spans"][-1]["to"].startswith("2026-03-06T00:00:00"))
 
     def test_no_app_events(self):
         self.assertEqual(summary.app_time([{"ts": self.t("09:00:00"), "type": "heartbeat"}], self.D),
-                         {"total_s": 0.0, "away_s": 0.0, "list": []})
+                         {"total_s": 0.0, "away_s": 0.0, "list": [], "spans": []})
 
     def test_day_data_and_cli_include_apps(self):
         write_day(self.D, self.events())

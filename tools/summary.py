@@ -393,13 +393,14 @@ def aggregate(events):
 
 
 def app_time(events, day):
-    """Foreground-application time from the monitor's app_focus events: {total_s, away_s, list[{app, bundle, s}]}.
+    """Foreground-application time from the monitor's app_focus events:
+    {total_s, away_s, list[{app, bundle, s}], spans[{from, to, app, bundle, reason}]}.
     A span runs from an app_focus to the next app_focus / system_sleep / monitor_start (the monitor restarted, so
     it did not see the time in between). The last span is clipped to the monitor's last sign of life (+1 heartbeat),
     to now on today's file, and to midnight. app=None spans (idle/locked) are 'away', not an application."""
     mon = sorted(((parse_ts(e.get("ts")), e) for e in events
                   if e.get("type") in MONITOR_TYPES and parse_ts(e.get("ts"))), key=lambda x: x[0])
-    out = {"total_s": 0.0, "away_s": 0.0, "list": []}
+    out = {"total_s": 0.0, "away_s": 0.0, "list": [], "spans": []}
     if not any(e.get("type") == "app_focus" for _t, e in mon):
         return out
     d = datetime.date.fromisoformat(day)
@@ -412,7 +413,12 @@ def app_time(events, day):
         if e.get("type") != "app_focus":
             continue
         end = next((t2 for t2, e2 in mon[i + 1:] if e2.get("type") in ("app_focus", "system_sleep", "monitor_start")), cap)
-        secs = max(0.0, (min(end, cap) - t).total_seconds())
+        end = min(end, cap)
+        secs = max(0.0, (end - t).total_seconds())
+        if secs >= 1:   # the timeline: gaps between spans (asleep, monitor down) stay blank
+            out["spans"].append({"from": t.isoformat(timespec="seconds"), "to": end.isoformat(timespec="seconds"),
+                                 "app": e.get("app"), "bundle": e.get("bundle") or e.get("app"),
+                                 "reason": e.get("reason") if e.get("app") is None else None})
         if e.get("app") is None:
             out["away_s"] += secs
         else:
