@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """Local web UI for the browsing summary: browse ~/chrome-history day by day.
 
-Usage: serve.py [--port 9898] [--open] [--lan [--allow-host NAME ...]]
+Usage: serve.py [--port 9898] [--open] [--allow-host NAME ...]
 
-Read-only and bound to 127.0.0.1 by default. The logs hold full URLs and your own Discord posts, so requests whose
-Host header is not an expected name are refused (DNS-rebinding guard) and no CORS headers are sent.
-
---lan binds 0.0.0.0 so other machines on the local network can reach it, with no authentication: anyone on the
-network can read the logs. Traffic is plain HTTP, so only use this on a network you trust.
+Read-only, listening on all interfaces so other machines on the local network can reach it, with no
+authentication: anyone on the network can read the logs (full URLs and your own Discord posts). Traffic is plain
+HTTP, so only run it on a network you trust. Requests whose Host header is not an IP address or a name of this
+machine are refused (DNS-rebinding guard) and no CORS headers are sent.
 """
 import argparse
 import ipaddress
@@ -91,8 +90,6 @@ class Handler(BaseHTTPRequestHandler):
     def _host_ok(self):
         host = (self.headers.get("Host") or "").strip().lower()
         port = self.server.server_address[1]
-        if not self.server.lan:
-            return host in ("127.0.0.1:%d" % port, "localhost:%d" % port)
         name, sep, p = host.rpartition(":")
         if not sep or p != str(port):
             return False
@@ -135,9 +132,8 @@ class Handler(BaseHTTPRequestHandler):
     do_PUT = do_DELETE = do_PATCH = do_POST
 
 
-def make_server(port=9898, lan=False, allow_hosts=()):
-    srv = ThreadingHTTPServer(("0.0.0.0" if lan else "127.0.0.1", port), Handler)
-    srv.lan = lan
+def make_server(port=9898, allow_hosts=()):
+    srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     srv.allowed_names = host_names() | {h.lower().rstrip(".") for h in allow_hosts}
     return srv
 
@@ -146,25 +142,21 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--port", type=int, default=9898)
     ap.add_argument("--open", action="store_true", help="open the page in the default browser")
-    ap.add_argument("--lan", action="store_true", help="listen on all interfaces (no authentication)")
     ap.add_argument("--allow-host", action="append", default=[], metavar="NAME",
-                    help="extra hostname clients may use with --lan (repeatable)")
+                    help="extra hostname clients may use (repeatable)")
     args = ap.parse_args()
     try:
-        srv = make_server(args.port, lan=args.lan, allow_hosts=args.allow_host)
+        srv = make_server(args.port, allow_hosts=args.allow_host)
     except OSError as e:
         sys.exit("cannot listen on port %d (%s); try --port" % (args.port, e))
     port = srv.server_address[1]
     local_url = "http://127.0.0.1:%d/" % port
-    if args.lan:
-        ip = lan_ip()
-        print("Summary UI (LAN, no auth, logs: %s, Ctrl-C to stop)" % summary.LOG_DIR)
-        print("  this machine: %s" % local_url)
-        if ip:
-            print("  network:      http://%s:%d/" % (ip, port))
-        print("  also via:     %s" % ", ".join("%s:%d" % (n, port) for n in sorted(srv.allowed_names)))
-    else:
-        print("Summary UI: %s   (logs: %s, Ctrl-C to stop)" % (local_url, summary.LOG_DIR))
+    ip = lan_ip()
+    print("Summary UI (LAN, no auth, logs: %s, Ctrl-C to stop)" % summary.LOG_DIR)
+    print("  this machine: %s" % local_url)
+    if ip:
+        print("  network:      http://%s:%d/" % (ip, port))
+    print("  also via:     %s" % ", ".join("%s:%d" % (n, port) for n in sorted(srv.allowed_names)))
     if args.open:
         threading.Timer(0.3, webbrowser.open, args=(local_url,)).start()
     try:
