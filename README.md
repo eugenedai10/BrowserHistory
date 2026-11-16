@@ -32,6 +32,7 @@ Uninstall: `./native-host/uninstall.sh` and remove the extension. Logs stay in `
 | `browser_start` `browser_stop` | external monitor: Chrome's main process appeared/disappeared (`chrome_pid`, `observed_late`, `ran_s`) |
 | `extension_missing` `extension_present` | external monitor: Chrome is running but the logger's native host is not connected for >15s (extension disabled/removed), and when it returns (`missing_s`) |
 | `system_sleep` `system_wake` | external monitor: the Mac slept (inferred from a wall-clock vs uptime-clock jump; `asleep_s`) |
+| `app_focus` | external monitor: the frontmost application changed (`app`, `bundle`); `app: null` with `reason` `idle` (no input for 5 min and nothing holding the display awake, timestamped when activity stopped) or `locked` when nobody is at the machine |
 | `discord_post` | channel info, length, text (your own posts only; `discord.logPostText` in `config.js`), confirmed |
 
 Every event has `ts` (local time with offset), `type`, and, when it came from a tab, `tab` and `incognito`.
@@ -51,6 +52,15 @@ python3 monitor/test_monitor.py
 `tools/summary.py` then labels each gap as **machine asleep**, **browser closed**, or **Chrome running, logger extension
 not connected**, and prints a "Browser sessions" block with how long Chrome was open but not logged. Without monitor
 data it falls back to the host-based labels below.
+
+**Time per application.** The monitor also polls the frontmost app every 2s (`lsappinfo`, plus `ioreg` for the idle
+time) and logs an `app_focus` event whenever it changes; `summary.py` and the UI turn those into "Time by application",
+with idle/locked time reported separately as away. Any keyboard, mouse, trackpad or scroll input counts as use, and so
+does a video or call that is keeping the display awake (`pmset -g assertions`), so watching without touching anything is
+not logged as away; away starts 5 minutes after the last input or the video ending. It records the app's name and bundle id only: no window titles
+(that would need the Accessibility permission), no keystrokes. The log therefore shows which apps you used and when;
+it stays in `~/chrome-history`. Set `TRACK_APPS=0` in the monitor's environment to turn it off. Re-run
+`./monitor/install.sh` after updating so the agent restarts with the new code.
 
 Limits: it detects but cannot prevent quitting Chrome or disabling the extension; a clean quit and a crash look the same
 from outside; the repo path is baked into the plist, so re-run `install.sh` if you move the repo. Chrome only by default
@@ -124,7 +134,7 @@ python3 tools/test_summary.py       # tests for the data layer and the server
 ```
 Pick a day with the arrows (or the ←/→ keys), the date field, **Today** / **Latest**, or by clicking a bar in the
 "All days" chart (switch it between active time, YouTube and visits). Each day shows totals, active time by hour, top
-sites, YouTube (videos and Shorts: found-via, top channels, every session in order), Discord, searches, and logging
+sites, applications (time each app was in front), YouTube (videos and Shorts: found-via, top channels, every session in order), Discord, searches, and logging
 health (coverage bar, gaps with causes, log integrity). Every chart has a **Table** view. The URL hash (`#2026-11-15`)
 deep-links to a day, and today's page refreshes itself every minute.
 

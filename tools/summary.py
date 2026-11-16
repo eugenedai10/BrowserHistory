@@ -78,8 +78,9 @@ def stop_label(stop, next_cause):
 # Written by monitor/monitor.py (outside Chrome). They explain gaps; they must NOT count as logging activity,
 # otherwise the monitor's own heartbeats would hide exactly the periods the extension was silent.
 MONITOR_TYPES = ("monitor_start", "monitor_heartbeat", "browser_start", "browser_stop",
-                 "extension_missing", "extension_present", "system_sleep", "system_wake")
+                 "extension_missing", "extension_present", "system_sleep", "system_wake", "app_focus")
 MONITOR_GAP_SECONDS = 150  # monitor heartbeats every 60s
+MONITOR_HEARTBEAT_SECONDS = 60
 
 
 def overlap(t1, t2, intervals):
@@ -391,6 +392,39 @@ def aggregate(events):
             "searches": searches, "yt": yt, "discord": discord, "posts": posts}
 
 
+def app_time(events, day):
+    """Foreground-application time from the monitor's app_focus events: {total_s, away_s, list[{app, bundle, s}]}.
+    A span runs from an app_focus to the next app_focus / system_sleep / monitor_start (the monitor restarted, so
+    it did not see the time in between). The last span is clipped to the monitor's last sign of life (+1 heartbeat),
+    to now on today's file, and to midnight. app=None spans (idle/locked) are 'away', not an application."""
+    mon = sorted(((parse_ts(e.get("ts")), e) for e in events
+                  if e.get("type") in MONITOR_TYPES and parse_ts(e.get("ts"))), key=lambda x: x[0])
+    out = {"total_s": 0.0, "away_s": 0.0, "list": []}
+    if not any(e.get("type") == "app_focus" for _t, e in mon):
+        return out
+    d = datetime.date.fromisoformat(day)
+    cap = datetime.datetime.combine(d + datetime.timedelta(days=1), datetime.time()).astimezone()
+    cap = min(cap, mon[-1][0] + datetime.timedelta(seconds=MONITOR_HEARTBEAT_SECONDS))
+    if day == datetime.date.today().isoformat():
+        cap = min(cap, datetime.datetime.now().astimezone())
+    by, names = collections.Counter(), {}
+    for i, (t, e) in enumerate(mon):
+        if e.get("type") != "app_focus":
+            continue
+        end = next((t2 for t2, e2 in mon[i + 1:] if e2.get("type") in ("app_focus", "system_sleep", "monitor_start")), cap)
+        secs = max(0.0, (min(end, cap) - t).total_seconds())
+        if e.get("app") is None:
+            out["away_s"] += secs
+        else:
+            key = e.get("bundle") or e["app"]
+            by[key] += secs
+            names[key] = e["app"]
+    out["list"] = [{"app": names[k], "bundle": k, "s": round(v, 1)} for k, v in by.most_common() if v >= 1]
+    out["total_s"] = round(sum(by.values()), 1)
+    out["away_s"] = round(out["away_s"], 1)
+    return out
+
+
 def summarize(day):
     events = load(day)
     print(f"\n=== {day}: {len(events)} events ===")
@@ -403,6 +437,12 @@ def summarize(day):
     report_gaps(events, day)
     report_logger_state(events, day)
     report_incognito(events, day)
+    apps = app_time(events, day)
+    if apps["list"] or apps["away_s"]:
+        print(f"\nTime by application (foreground; {fmt(apps['total_s'])} in use, {fmt(apps['away_s'])} away/idle/locked):")
+        for r in apps["list"][:10]:
+            pct = 100 * r["s"] / apps["total_s"] if apps["total_s"] else 0
+            print(f"  {fmt(r['s']):>8}  {pct:4.0f}%  {r['app']}")
     print(f"\nvisits: {visits}   link clicks: {clicks}   searches: {len(searches)}")
     print("\nTop sites by active time:")
     for host, a in dom_active.most_common(10):
@@ -530,6 +570,7 @@ def day_data(day, events=None):
         "top_sites": [{"host": h, "active_s": round(v, 1), "open_s": round(a["dom_total"][h], 1)}
                       for h, v in a["dom_active"].most_common(12)],
         "hourly": hourly_active(events),
+        "apps": app_time(events, day),
         "searches": [{"engine": en, "query": q} for en, q in a["searches"]],
         "youtube": {k: _yt_kind([e for e in yt if e.get("kind") == k]) for k in ("video", "short", "embed")},
         "discord": {
@@ -585,6 +626,7 @@ def trend():
                 "yt_video_s": round(sum(e.get("watched_s", 0) for e in yt if e.get("kind") == "video"), 1),
                 "yt_short_s": round(sum(e.get("watched_s", 0) for e in yt if e.get("kind") == "short"), 1),
                 "yt_embed_s": round(sum(e.get("watched_s", 0) for e in yt if e.get("kind") == "embed"), 1),
+                "app_s": app_time(events, day)["total_s"],
             }
             hit = _trend_cache[day] = (key, row)
         rows.append(hit[1])

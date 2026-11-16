@@ -9,6 +9,8 @@ Watches Chrome from the outside and writes ground-truth markers into the same
                                    disabled/removed), and when it comes back
   system_sleep / system_wake       the Mac slept (inferred from a wall-clock vs uptime-clock jump)
   monitor_start / monitor_heartbeat  liveness of this monitor itself
+  app_focus                        the frontmost application changed (app, bundle); app=null with
+                                   reason idle|locked when nobody is at the machine
 
 tools/summary.py uses these to say exactly why the log has a gap.
 """
@@ -26,6 +28,12 @@ POLL_S = 2
 GRACE_S = 15            # host must be absent this long (with Chrome running) before it counts as missing
 SLEEP_THRESHOLD_S = 5   # wall-clock minus uptime-clock jump that means "the Mac slept"
 HEARTBEAT_S = 60
+
+# Foreground-app tracking (app name + bundle id only; no window titles, so no Accessibility permission).
+TRACK_APPS = os.environ.get("TRACK_APPS", "1") != "0"   # TRACK_APPS=0 turns it off
+IDLE_S = 300            # no input (and no video/call holding the display awake) this long: "away"
+RESUME_GAP_S = 10       # ticks further apart than this mean the Mac slept (or we stalled)
+LOCK_BUNDLE = "com.apple.loginwindow"
 
 # Chrome's main process; helpers are "Google Chrome Helper (...)" and do not match.
 CHROME_RE = re.compile(r"^(?:.*/)?Google Chrome\.app/Contents/MacOS/Google Chrome(?:\s|$)")
@@ -121,6 +129,100 @@ class Monitor:
                       extension_connected=(cur["ext"] == "present") if cur else None)
 
 
+class Focus:
+    """Foreground-application tracker. tick() is a pure function of (frontmost app, idle seconds, wall clock) plus
+    its own state; it emits app_focus only when the effective foreground changes. app=None means nobody is at
+    the machine (reason 'idle': no input for IDLE_S, back-dated to when input stopped; or 'locked')."""
+
+    def __init__(self, emit):
+        self.emit = emit
+        self.cur = None        # last emitted (app, bundle, reason)
+        self.last_wall = None
+        self.last_ts = 0.0     # ts of the last emitted event: back-dating must never go before it
+        self.last_held = None  # last time something was holding the display awake (video, call): counts as use
+        self.day = None
+
+    def tick(self, front, idle_s, wall, held=None):
+        """held: optional callable -> True/False/None (None = probe failed). Only asked once input has been
+        idle for IDLE_S, because watching a video or being on a call involves no input but is not "away"."""
+        floor = self.last_ts
+        if self.last_wall is not None and wall - self.last_wall > RESUME_GAP_S:
+            self.cur, floor = None, wall   # slept or stalled: start a fresh span, don't back-date into the gap
+        self.last_wall = wall
+        today = datetime.date.fromtimestamp(wall)
+        if self.day is not None and today != self.day:
+            self.cur = None                # midnight: each day's file must be self-contained
+        self.day = today
+        if front is None:
+            return
+        app, bundle = front
+        if bundle != LOCK_BUNDLE and idle_s >= IDLE_S and held is not None:
+            h = held()
+            if h is None:
+                return                     # failed probe: skip the tick rather than guess
+            if h:
+                self.last_held = wall
+        if self.last_held is not None:     # activity = input OR display held awake, whichever is more recent
+            idle_s = min(idle_s, wall - self.last_held)
+        if bundle == LOCK_BUNDLE:
+            eff, ts = (None, None, "locked"), wall
+        elif idle_s >= IDLE_S:
+            eff, ts = (None, None, "idle"), max(wall - idle_s, floor)
+        else:
+            eff, ts = (app, bundle, None), wall
+        if eff == self.cur:
+            return
+        self.cur, self.last_ts = eff, ts
+        fields = {"app": eff[0], "bundle": eff[1]}
+        if eff[2]:
+            fields["reason"] = eff[2]
+        self.emit("app_focus", ts, **fields)
+
+
+def parse_front(text):
+    """(name, bundle id) from `lsappinfo info -only name -only bundleid` output, or None."""
+    name = re.search(r'"LSDisplayName"="([^"]*)"', text)
+    bundle = re.search(r'"CFBundleIdentifier"="([^"]*)"', text)
+    return (name.group(1), bundle.group(1)) if name and bundle else None
+
+
+def parse_idle(text):
+    """Seconds since the last keyboard/mouse input from `ioreg -c IOHIDSystem -d 1 -r` output, or None."""
+    m = re.search(r'"HIDIdleTime"\s*=\s*(\d+)', text)
+    return int(m.group(1)) / 1e9 if m else None
+
+
+def _run(cmd):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        return r.stdout if r.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def front_app():
+    asn = (_run(["lsappinfo", "front"]) or "").strip()
+    out = _run(["lsappinfo", "info", "-only", "name", "-only", "bundleid", asn]) if asn else None
+    return parse_front(out) if out else None
+
+
+def parse_display_held(text):
+    """True when some process is preventing display sleep (video playback, calls, presentations), from
+    `pmset -g assertions`. Not PreventUserIdleSystemSleep: powerd holds that whenever the display is on."""
+    m = re.search(r"^\s*PreventUserIdleDisplaySleep\s+(\d+)", text, re.M)
+    return int(m.group(1)) > 0 if m else None
+
+
+def display_held():
+    out = _run(["pmset", "-g", "assertions"])
+    return parse_display_held(out) if out else None
+
+
+def idle_seconds():
+    out = _run(["ioreg", "-c", "IOHIDSystem", "-d", "1", "-r"])
+    return parse_idle(out) if out else None
+
+
 def snapshot():
     try:
         r = subprocess.run(["ps", "-axo", "pid=,ppid=,lstart=,command="], capture_output=True, text=True, timeout=10)
@@ -135,12 +237,20 @@ def emit_to_log(kind, epoch, **fields):
 
 def main():
     m = Monitor(emit_to_log)
+    focus = Focus(emit_to_log) if TRACK_APPS else None
     uptime = time.monotonic()
     emit_to_log("monitor_start", time.time(), cause="login" if uptime < 600 else "restart", system_uptime_s=round(uptime))
     while True:
         procs = snapshot()
         if procs is not None:
             m.tick(procs, time.time(), time.monotonic())
+        if focus:
+            try:
+                front, idle = front_app(), idle_seconds()
+                if front is not None and idle is not None:  # a failed probe skips the tick, never logs "no app"
+                    focus.tick(front, idle, time.time(), display_held)
+            except Exception as e:  # app tracking must never take the monitor down
+                print("focus error: %s" % e, file=sys.stderr)
         time.sleep(POLL_S)
 
 

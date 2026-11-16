@@ -158,6 +158,70 @@ class DataTests(unittest.TestCase):
             summary.load = real
 
 
+class AppTimeTests(unittest.TestCase):
+    D = "2026-03-05"  # a past day, so "now" never clips the last span
+
+    def t(self, hms):
+        return f"{self.D}T{hms}.000{TZ}"
+
+    def focus(self, hms, app, bundle=None, **kw):
+        return {"ts": self.t(hms), "type": "app_focus", "app": app, "bundle": bundle or ("com.x." + str(app)), **kw}
+
+    def events(self):
+        return [
+            {"ts": self.t("09:00:00"), "type": "monitor_heartbeat"},
+            self.focus("09:00:00", "Code"),
+            self.focus("09:10:00", "Safari"),
+            self.focus("09:20:00", None, None, reason="idle"),
+            self.focus("09:30:00", "Code"),
+            {"ts": self.t("09:40:00"), "type": "system_sleep"},     # the hour we did not see is not credited
+            {"ts": self.t("09:50:00"), "type": "monitor_start"},
+            self.focus("09:50:00", "Safari"),
+            {"ts": self.t("10:00:00"), "type": "monitor_heartbeat"},  # last sign of life; the monitor then died
+        ]
+
+    def test_spans_idle_sleep_restart_and_dead_monitor(self):
+        a = summary.app_time(self.events(), self.D)
+        got = {r["app"]: r["s"] for r in a["list"]}
+        self.assertEqual(got, {"Safari": 600 + 600 + 60, "Code": 600 + 600})
+        self.assertEqual(a["away_s"], 600)
+        self.assertEqual(a["total_s"], 2460)
+        self.assertEqual(a["list"][0]["app"], "Safari")             # most time first
+
+    def test_same_bundle_with_new_display_name_is_one_row(self):
+        ev = [self.focus("09:00:00", "Old Name", "com.x.app"), self.focus("09:01:00", "New Name", "com.x.app"),
+              {"ts": self.t("09:02:00"), "type": "monitor_heartbeat"}]
+        rows = summary.app_time(ev, self.D)["list"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["app"], rows[0]["s"]), ("New Name", 180))
+
+    def test_clipped_at_midnight(self):
+        ev = [self.focus("23:00:00", "Code"), {"ts": f"2026-03-06T01:00:00.000{TZ}", "type": "monitor_heartbeat"}]
+        self.assertEqual(summary.app_time(ev, self.D)["list"][0]["s"], 3600)
+
+    def test_no_app_events(self):
+        self.assertEqual(summary.app_time([{"ts": self.t("09:00:00"), "type": "heartbeat"}], self.D),
+                         {"total_s": 0.0, "away_s": 0.0, "list": []})
+
+    def test_day_data_and_cli_include_apps(self):
+        write_day(self.D, self.events())
+        self.addCleanup(os.remove, os.path.join(_tmp.name, self.D + ".jsonl"))  # shared dir: other tests list days
+        d = summary.day_data(self.D)
+        self.assertEqual(d["apps"]["total_s"], 2460)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            summary.summarize(self.D)
+        self.assertIn("Time by application", buf.getvalue())
+        self.assertIn("Safari", buf.getvalue())
+
+    def test_app_focus_is_not_logger_activity(self):
+        # the monitor's markers must not hide a gap in the extension's own log
+        ev = [e for e in EVENTS if e["type"] == "heartbeat"] + [self.focus("10:02:00", "Code").copy()]
+        ev[-1]["ts"] = ts("10:02:00")
+        g = summary.gap_data(ev, DAY)
+        self.assertTrue(any(d > 200 for _a, _b, d, _l in g["gaps"]))
+
+
 class ServerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

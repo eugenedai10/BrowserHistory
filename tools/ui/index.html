@@ -450,6 +450,21 @@ function sitesCard(d) {
     barList(rows, { fmtVal: fmtShort, empty: 'No visits logged' }));
 }
 
+function appsCard(d) {
+  const a = d.apps;
+  if (!a || (!a.list.length && !a.away_s)) return null;  // days before app tracking, or tracking off
+  const rows = a.list.slice(0, 12).map((r) => ({
+    name: r.app, sub: a.total_s ? `${Math.round((100 * r.s) / a.total_s)}%` : '', v: r.s,
+    title: `${r.app} (${r.bundle}): ${fmt(r.s)} in front`,
+  }));
+  return h('section', { class: 'card' },
+    h('div', { class: 'card-h' }, h('div', null, h('h2', null, 'Applications'),
+      h('p', { class: 'sub' }, 'Time each app was in front (app names only; no window titles)'))),
+    barList(rows, { fmtVal: fmtShort, empty: 'No application time logged' }),
+    h('p', { class: 'note' }, h('b', null, fmtShort(a.total_s)), ' in use · ', h('b', null, fmtShort(a.away_s)),
+      ' away (no input for 5 min, screen locked)'));
+}
+
 function sessionsList(rows, key, accent) {
   const limit = st.expand[key] ? rows.length : 12;
   const list = rows.slice(0, limit).map((s) => {
@@ -579,7 +594,7 @@ function render() {
     if (!d.events) {
       out.push(h('section', { class: 'card' }, h('h2', null, 'No log for this day'), h('p', { class: 'sub' }, `Nothing was logged on ${st.day}.`)));
     } else {
-      out.push(tiles(d), h('div', { class: 'grid2' }, hourlyCard(d), sitesCard(d)), youtubeCard(d), discordCard(d), searchesCard(d), healthCard(res.health));
+      out.push(tiles(d), h('div', { class: 'grid2' }, hourlyCard(d), sitesCard(d)), appsCard(d), youtubeCard(d), discordCard(d), searchesCard(d), healthCard(res.health));
     }
   }
   app.replaceChildren(...out.filter(Boolean));
