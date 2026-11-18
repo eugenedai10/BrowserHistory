@@ -115,6 +115,7 @@ function mergeLive(rows) {
   const bySid = new Map(rows.map((r) => [r.sid, r]));
   for (const [sid, l] of Object.entries(liveYt)) {
     if (l.at < cutoff) { delete liveYt[sid]; continue; }
+    if (l.ev.music) continue; // music.youtube.com tracks are not videos
     const h = bySid.get(sid);
     if (h && !h.partial) continue; // the host already has the final record
     const row = {};

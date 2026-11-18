@@ -356,6 +356,13 @@ def report_incognito(events, day):
         print(f"  {s:%H:%M:%S} -> {end}  {fmt((e - s).total_seconds()):>7}{began}{tail}")
 
 
+HIDDEN_SITES = {"music.youtube.com"}  # still in the time totals, but not ranked in "Top sites"
+
+
+def top_sites(dom_active, n):
+    return [(h, v) for h, v in dom_active.most_common() if h not in HIDDEN_SITES][:n]
+
+
 def aggregate(events):
     """Per-day totals shared by the CLI report and the web UI (serve.py)."""
     dom_active = collections.Counter()
@@ -378,6 +385,8 @@ def aggregate(events):
         elif t == "search":
             searches.append((e.get("engine"), e.get("query")))
         elif t == "yt_session":
+            if e.get("music"):  # music.youtube.com tracks are not videos
+                continue
             # keep the fullest record per session id (partial snapshots can precede the final one)
             key = e.get("sid") or id(e)
             if key not in yt or not e.get("partial"):
@@ -451,7 +460,7 @@ def summarize(day):
             print(f"  {fmt(r['s']):>8}  {pct:4.0f}%  {r['app']}")
     print(f"\nvisits: {visits}   link clicks: {clicks}   searches: {len(searches)}")
     print("\nTop sites by active time:")
-    for host, a in dom_active.most_common(10):
+    for host, a in top_sites(dom_active, 10):
         print(f"  {fmt(a):>8} active / {fmt(dom_total[host]):>8} open   {host}")
 
     if yt:
@@ -570,7 +579,7 @@ def day_data(day, events=None):
         "day": day, "events": len(events), "visits": a["visits"], "clicks": a["clicks"],
         "active_s": round(sum(a["dom_active"].values()), 1), "open_s": round(sum(a["dom_total"].values()), 1),
         "top_sites": [{"host": h, "active_s": round(v, 1), "open_s": round(a["dom_total"][h], 1)}
-                      for h, v in a["dom_active"].most_common(12)],
+                      for h, v in top_sites(a["dom_active"], 12)],
         "hourly": hourly_active(events),
         "apps": app_time(events, day),
         "searches": [{"engine": en, "query": q} for en, q in a["searches"]],

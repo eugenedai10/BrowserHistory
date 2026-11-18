@@ -116,8 +116,8 @@ def handle_yt_today():
                     e = json.loads(line)
                 except ValueError:
                     continue
-                if not isinstance(e, dict) or e.get("type") != "yt_session":
-                    continue
+                if not isinstance(e, dict) or e.get("type") != "yt_session" or e.get("music"):
+                    continue  # music.youtube.com tracks are not videos
                 key = e.get("sid") or "line%d" % n
                 if key not in sessions or not e.get("partial"):
                     sessions[key] = e

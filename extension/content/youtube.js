@@ -241,6 +241,7 @@
       liked: f.liked === undefined ? null : f.liked,
       subscribed: f.subscribed === undefined ? null : f.subscribed,
       source: cur.source,
+      music: IS_MUSIC, // music.youtube.com: logged, but excluded from the video stats
     };
   }
 

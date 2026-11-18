@@ -21,7 +21,7 @@ Uninstall: `./native-host/uninstall.sh` and remove the extension. Logs stay in `
 | `click` | page_url, href, text, new_tab, external, (YouTube: yt_source, yt_video_id) |
 | `search` | engine, query, url |
 | `yt_start` `yt_pause` `yt_resume` `yt_seek` `yt_end` | video_id, kind (video/short/embed), title, channel, length_s, position_s (seek: from_s/to_s) |
-| `yt_session` | watched_s, max_position_s, pct_watched, finished, pauses, seeks, loops, ads, avg_speed, quality, captions, liked, subscribed, source (home/sidebar/search/autoplay/shorts_swipe/embed/...), partial, page_url (embeds only: the site hosting the player) |
+| `yt_session` | watched_s, max_position_s, pct_watched, finished, pauses, seeks, loops, ads, avg_speed, quality, captions, liked, subscribed, source (home/sidebar/search/autoplay/shorts_swipe/embed/...), partial, page_url (embeds only: the site hosting the player), music (true on music.youtube.com: logged, but excluded from the summary, UI and popup video counts) |
 | `yt_reminder` | kind (video/short), total_s (today's watch time of that kind), n (which reminder of the day) |
 | `discord_channel` | guild/channel ids + names, dm, enter, leave, dur_active_s, messages_seen (content is NOT logged) |
 | `host_start` `host_stop` | written by the native host when the extension connects/disconnects. `host_stop.cause` is `browser_exit` (Chrome itself went away within 5s: quit or crash) or `extension_stopped` (Chrome still running: extension reloaded, disabled, removed, or its worker restarted) |
